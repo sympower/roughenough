@@ -16,7 +16,7 @@ for contributing to the project.
 **Clone the repository:**
 
 ```bash
-git clone https://github.com/int08h/roughenough.git
+git clone https://github.com/sympower/roughenough.git
 cd roughenough
 ```
 

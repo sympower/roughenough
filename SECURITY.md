@@ -2,14 +2,21 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please email **stuart @ int08h.com** rather than opening a public issue.
+This is a fork of [int08h/roughenough](https://github.com/int08h/roughenough).
+
+For vulnerabilities affecting the core protocol implementation:
+- Report to the upstream project: **stuart @ int08h.com**
+- Also notify this fork: **security @ sympower.net**
+
+For vulnerabilities specific to this fork's additions (multi-protocol support, etc.):
+- Report to: **security @ sympower.net**
+
+Please do not open public issues for security vulnerabilities.
 
 Include:
 - Description of the vulnerability
 - Steps to reproduce
 - Potential impact
-
-I'll respond when I can and work on a fix as time permits.
 
 ## Security Notes
 
@@ -21,7 +28,7 @@ I'll respond when I can and work on a fix as time permits.
 Online keys have multiple options for secure storage:
 - Linux Kernel Retention Service (KRS)
 - SSH agent
-- PKCS#11 hardware 
+- PKCS#11 hardware
 - AWS KMS and Secrets Manager
 - GCP KMS and Secrets Manager
 

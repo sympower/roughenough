@@ -1,6 +1,6 @@
 # Roughtime
 
-[![Build Status](https://github.com/int08h/roughenough/actions/workflows/rust.yml/badge.svg)](https://github.com/int08h/roughenough/actions/workflows/rust.yml)
+[![Build Status](https://github.com/sympower/roughenough/actions/workflows/rust.yml/badge.svg)](https://github.com/sympower/roughenough/actions/workflows/rust.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0%20OR%20MIT-blue.svg)](LICENSE-APACHE)
 
 Roughenough is an implementation of the [IETF Roughtime](https://datatracker.ietf.org/doc/draft-ietf-ntp-roughtime/) 
