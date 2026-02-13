@@ -1,0 +1,15 @@
+# Roughtime test servers
+# Format: name|host|port|protocol|pubkey
+# Lines starting with # are comments, empty lines are ignored
+# pubkey can be empty for unauthenticated queries
+
+# Draft-14 Servers (IETF Roughtime RFC)
+int08h.com|roughtime.int08h.com|2002|14|AW5uAoTSTDfG5NfY1bTh08GUnOqlRb+HVhbJ3ODJvsE=
+roughtime.se|roughtime.se|2002|14|S3AzfZJ5CjSdkJ21ZJGbxqdYP/SoE8fXKY0+aicsehI=
+
+# Draft-08 Servers (Cloudflare-compatible)
+Cloudflare|roughtime.cloudflare.com|2003|8|0GD7c3yP8xEc4Zl2zeuN2SlLvDVVocjsPSL8/Rl/7zg=
+
+# Unauthenticated queries (no signature verification)
+int08h (no auth)|roughtime.int08h.com|2002|14|
+Cloudflare (no auth)|roughtime.cloudflare.com|2003|8|

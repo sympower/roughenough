@@ -1,0 +1,62 @@
+name: Real-World Server Tests
+
+# Informational check - tests against live Roughtime servers
+# This check may fail due to network issues or server unavailability
+# Failures do not block PR merging
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: stable
+
+jobs:
+  real-world-tests:
+    name: Test Real Servers
+    runs-on: ubuntu-latest
+    # This makes the check informational - shows red X on failure but doesn't block merge
+    continue-on-error: true
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        # Automatically caches ~/.cargo/registry and ~/.cargo/git
+
+    - name: Build client
+      run: cargo build --bin roughenough_client
+
+    - name: Run real-world server tests
+      id: server-tests
+      timeout-minutes: 5
+      run: |
+        chmod +x ./test-real-servers.sh
+        ./test-real-servers.sh | tee test-results.txt
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v5
+      if: always()
+      with:
+        name: real-world-test-results
+        path: test-results.txt
+        retention-days: 7
+
+    - name: Check for failures
+      run: |
+        # Extract results from output
+        if grep -q "Failed:  0" test-results.txt; then
+          echo "All server tests passed!"
+        else
+          echo "::warning::Some real-world server tests failed. Check artifacts for details."
+          # Show the failure details in the log
+          cat test-results.txt
+          # Exit with error to show red X, but continue-on-error allows merge
+          exit 1
+        fi

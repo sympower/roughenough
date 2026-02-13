@@ -10,4 +10,4 @@ pub mod memory;
 pub mod onlinekey;
 mod test_util;
 
-pub use onlinekey::OnlineKey;
+pub use onlinekey::{OnlineKeyDraft08, OnlineKeyDraft14};

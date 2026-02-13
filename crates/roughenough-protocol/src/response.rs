@@ -3,9 +3,10 @@ use std::fmt::Debug;
 use crate::cursor::ParseCursor;
 use crate::error::Error;
 use crate::error::Error::{BufferTooSmall, UnexpectedTags};
-use crate::header::{Header, Header7};
+use crate::header::{Header, Header6, Header7};
+use crate::protocol_ver::ProtocolVersion;
 use crate::tag::Tag;
-use crate::tags::srep::SignedResponse;
+use crate::tags::srep::{SignedResponse, SignedResponseDraft08};
 use crate::tags::{Certificate, MerklePath, MessageType, Nonce, Signature};
 use crate::wire::{FromFrame, FromWire, FromWireN, ToFrame, ToWire};
 
@@ -204,15 +205,241 @@ impl ToWire for Response {
 
 impl ToFrame for Response {}
 
+/// Draft-08 compatible response format.
+///
+/// This response format is received from servers implementing IETF draft-ietf-ntp-roughtime-08
+/// (e.g., Cloudflare's roughtime.cloudflare.com:2003).
+///
+/// # Wire Format
+///
+/// Draft-08 responses have 6 tags: SIG, VER, PATH, SREP, CERT, INDX (no NONC, no TYPE).
+///
+/// ```text
+/// +------+------+------+------+------+------+
+/// | SIG  | VER  | PATH | SREP | CERT | INDX |
+/// +------+------+------+------+------+------+
+/// ```
+///
+/// # Differences from Draft-14
+///
+/// - No NONC tag (draft-14 includes the nonce in response for verification)
+/// - No TYPE tag (draft-14 uses TYPE to distinguish request/response)
+/// - SREP has only 3 tags: RADI, MIDP, ROOT (draft-14 SREP has VER, RADI, MIDP, VERS, ROOT)
+/// - Merkle proof uses only the 32-byte nonce as leaf hash (draft-14 uses full framed request)
+///
+/// # Validation
+///
+/// Draft-08 responses require different Merkle proof computation than draft-14.
+/// The client crate provides validation methods for both protocol versions.
+///
+/// # Conversion
+///
+/// Draft-08 responses can be converted to the standard `Response` type using `From`:
+///
+/// ```ignore
+/// let draft08_response: ResponseDraft08 = /* ... */;
+/// let response: Response = Response::from(draft08_response);
+/// ```
+///
+/// # Note
+///
+/// This type is primarily used by clients to parse incoming responses. The server-side
+/// test utilities also use it for generating draft-08 format responses in tests.
+#[repr(C)]
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ResponseDraft08 {
+    header: Header6,
+    signature: Signature,
+    version: ProtocolVersion,
+    path: MerklePath,
+    srep: SignedResponseDraft08,
+    cert: Certificate,
+    index: u32,
+}
+
+impl ResponseDraft08 {
+    /// Draft-08 response has 6 tags: SIG, VER, PATH, SREP, CERT, INDX
+    const TAGS: [Tag; 6] = [
+        Tag::SIG,
+        Tag::VER,
+        Tag::PATH,
+        Tag::SREP,
+        Tag::CERT,
+        Tag::INDX,
+    ];
+
+    pub fn sig(&self) -> &Signature {
+        &self.signature
+    }
+
+    pub fn ver(&self) -> ProtocolVersion {
+        self.version
+    }
+
+    pub fn path(&self) -> &MerklePath {
+        &self.path
+    }
+
+    pub fn srep(&self) -> &SignedResponseDraft08 {
+        &self.srep
+    }
+
+    pub fn cert(&self) -> &Certificate {
+        &self.cert
+    }
+
+    pub fn indx(&self) -> u32 {
+        self.index
+    }
+
+    pub fn header(&self) -> &Header6 {
+        &self.header
+    }
+
+    pub fn set_sig(&mut self, sig: Signature) {
+        self.signature = sig;
+    }
+
+    pub fn set_srep(&mut self, srep: SignedResponseDraft08) {
+        self.srep = srep;
+        self.update_offsets();
+    }
+
+    pub fn set_cert(&mut self, cert: Certificate) {
+        self.cert = cert;
+        self.update_offsets();
+    }
+
+    pub fn set_indx(&mut self, indx: u32) {
+        self.index = indx;
+    }
+
+    /// Overwrite this Response's MerklePath with the provided one
+    pub fn set_path(&mut self, path: MerklePath) {
+        self.path = path;
+        self.update_offsets();
+    }
+
+    /// Copy the contents of another MerklePath into this one, overwriting any existing data.
+    pub fn copy_path(&mut self, path: &MerklePath) {
+        self.path.copy_from(path);
+        self.update_offsets();
+    }
+
+    fn update_offsets(&mut self) {
+        // offsets[0]: end of SIG (64 bytes)
+        self.header.offsets[0] = self.signature.wire_size() as u32;
+        // offsets[1]: end of VER (4 bytes)
+        self.header.offsets[1] = self.header.offsets[0] + self.version.wire_size() as u32;
+        // offsets[2]: end of PATH
+        self.header.offsets[2] = self.header.offsets[1] + self.path.wire_size() as u32;
+        // offsets[3]: end of SREP
+        self.header.offsets[3] = self.header.offsets[2] + self.srep.wire_size() as u32;
+        // offsets[4]: end of CERT
+        self.header.offsets[4] = self.header.offsets[3] + self.cert.wire_size() as u32;
+    }
+}
+
+impl Default for ResponseDraft08 {
+    fn default() -> Self {
+        let mut response = Self {
+            header: Header6::default(),
+            signature: Signature::default(),
+            version: ProtocolVersion::RfcDraft08,
+            path: MerklePath::default(),
+            srep: SignedResponseDraft08::default(),
+            cert: Certificate::default(),
+            index: 0,
+        };
+
+        response.header.tags = Self::TAGS;
+        response
+    }
+}
+
+impl FromWire for ResponseDraft08 {
+    fn from_wire(cursor: &mut ParseCursor) -> Result<Self, Error> {
+        let header = Header6::from_wire(cursor)?;
+        header.check_offset_bounds(cursor.remaining())?;
+
+        if header.tags() != Self::TAGS {
+            return Err(UnexpectedTags);
+        }
+
+        let mut response = ResponseDraft08 {
+            header,
+            ..Default::default()
+        };
+
+        response.signature = Signature::from_wire(cursor)?;
+        response.version = ProtocolVersion::from_wire(cursor)?;
+
+        // PATH length from offsets (offset[2] - offset[1])
+        let path_len = (response.header.offsets[2] - response.header.offsets[1]) as usize;
+        response.path = MerklePath::from_wire_n(cursor, path_len)?;
+
+        response.srep = SignedResponseDraft08::from_wire(cursor)?;
+        response.cert = Certificate::from_wire(cursor)?;
+        response.index = cursor.try_get_u32_le()?;
+
+        Ok(response)
+    }
+}
+
+impl FromFrame for ResponseDraft08 {}
+
+impl ToWire for ResponseDraft08 {
+    fn wire_size(&self) -> usize {
+        self.header.wire_size()
+            + self.signature.wire_size()
+            + self.version.wire_size()
+            + self.path.wire_size()
+            + self.srep.wire_size()
+            + self.cert.wire_size()
+            + size_of::<u32>() // index
+    }
+
+    fn to_wire(&self, cursor: &mut ParseCursor) -> Result<(), Error> {
+        self.header.to_wire(cursor)?;
+        self.signature.to_wire(cursor)?;
+        self.version.to_wire(cursor)?;
+        self.path.to_wire(cursor)?;
+        self.srep.to_wire(cursor)?;
+        self.cert.to_wire(cursor)?;
+        cursor.put_u32_le(self.index);
+        Ok(())
+    }
+}
+
+impl ToFrame for ResponseDraft08 {}
+
+impl From<ResponseDraft08> for Response {
+    /// Convert a draft-08 response to draft-14 format for downstream compatibility.
+    /// Sets NONC to empty and TYPE to MessageType::Response since draft-08 doesn't include them.
+    fn from(draft08: ResponseDraft08) -> Self {
+        let mut response = Response::default();
+        response.set_sig(draft08.signature);
+        // draft-08 doesn't include NONC in response, leave it as default (empty)
+        response.set_path(draft08.path);
+        response.set_srep(SignedResponse::from(draft08.srep));
+        response.set_cert(draft08.cert);
+        response.set_indx(draft08.index);
+        response
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::cursor::ParseCursor;
     use crate::header::Header;
-    use crate::response::Response;
+    use crate::response::{Response, ResponseDraft08};
     use crate::tag::Tag;
-    use crate::tags::ProtocolVersion::{Google, RfcDraft14};
-    use crate::tags::{MerklePath, MessageType, SignedResponse, SupportedVersions};
-    use crate::wire::FromFrame;
+    use crate::tags::ProtocolVersion::{RfcDraft08, RfcDraft14};
+    use crate::tags::{
+        Certificate, MerklePath, MerkleRoot, MessageType, Nonce, Signature, SignedResponse,
+        SignedResponseDraft08, SupportedVersions,
+    };
+    use crate::wire::{FromFrame, FromWire, ToWire};
 
     #[test]
     fn from_wire_on_known_bytes() {
@@ -306,7 +533,8 @@ mod tests {
         assert_eq!(*srep.ver(), RfcDraft14);
         assert_eq!(srep.radi(), 5);
         assert_eq!(srep.midp(), 1748359193);
-        assert_eq!(srep.vers().versions(), &[Google, RfcDraft14]);
+        // The test data contains Google (0x0) which is now mapped to RfcDraft08
+        assert_eq!(srep.vers().versions(), &[RfcDraft08, RfcDraft14]);
         assert_eq!(srep.root().as_ref().len(), 32);
         assert_eq!(
             srep.root().as_ref()[..8],
@@ -344,7 +572,7 @@ mod tests {
         assert_eq!(response.header.offsets, [64, 96, 100, 292, 380, 532]);
 
         let mut srep = SignedResponse::default();
-        srep.set_vers(&SupportedVersions::new(&[Google, RfcDraft14]));
+        srep.set_vers(&SupportedVersions::new(&[RfcDraft08, RfcDraft14]));
         response.set_srep(srep);
         assert_eq!(response.header.offsets, [64, 96, 100, 292, 388, 540]);
 
@@ -352,5 +580,109 @@ mod tests {
         srep.set_vers(&SupportedVersions::new(&[RfcDraft14]));
         response.set_srep(srep);
         assert_eq!(response.header.offsets, [64, 96, 100, 292, 384, 536]);
+    }
+
+    fn create_test_response() -> Response {
+        let mut response = Response::default();
+        response.set_sig(Signature::from([0x11u8; 64]));
+        response.set_nonc(Nonce::from([0x22u8; 32]));
+
+        let path = MerklePath::try_from([0x33u8; 64].as_slice()).unwrap();
+        response.set_path(path);
+
+        let mut srep = SignedResponse::default();
+        srep.set_ver(RfcDraft14);
+        srep.set_radi(5);
+        srep.set_midp(1234567890);
+        srep.set_vers(&SupportedVersions::new(&[RfcDraft08, RfcDraft14]));
+        srep.set_root(&MerkleRoot::from([0x44u8; 32]));
+        response.set_srep(srep);
+
+        response.set_cert(Certificate::default());
+        response.set_indx(7);
+
+        response
+    }
+
+    #[test]
+    fn response_wire_roundtrip() {
+        let response1 = create_test_response();
+
+        let mut buf = vec![0u8; response1.wire_size()];
+        {
+            let mut cursor = ParseCursor::new(&mut buf);
+            response1.to_wire(&mut cursor).unwrap();
+        }
+
+        let mut cursor = ParseCursor::new(&mut buf);
+        let response2 = Response::from_wire(&mut cursor).unwrap();
+
+        assert_eq!(response1.sig(), response2.sig());
+        assert_eq!(response1.nonc(), response2.nonc());
+        assert_eq!(response1.msg_type(), response2.msg_type());
+        assert_eq!(response1.path().as_ref(), response2.path().as_ref());
+        assert_eq!(response1.srep().ver(), response2.srep().ver());
+        assert_eq!(response1.srep().radi(), response2.srep().radi());
+        assert_eq!(response1.srep().midp(), response2.srep().midp());
+        assert_eq!(response1.srep().root(), response2.srep().root());
+        assert_eq!(response1.indx(), response2.indx());
+    }
+
+    fn create_test_response_draft08() -> ResponseDraft08 {
+        let mut response = ResponseDraft08::default();
+        response.set_sig(Signature::from([0x11u8; 64]));
+
+        let path = MerklePath::try_from([0x33u8; 64].as_slice()).unwrap();
+        response.set_path(path);
+
+        let mut srep = SignedResponseDraft08::default();
+        srep.set_radi(5);
+        srep.set_midp(1234567890);
+        srep.set_root(&MerkleRoot::from([0x44u8; 32]));
+        response.set_srep(srep);
+
+        response.set_cert(Certificate::default());
+        response.set_indx(7);
+
+        response
+    }
+
+    #[test]
+    fn response_draft08_wire_roundtrip() {
+        let response1 = create_test_response_draft08();
+
+        let mut buf = vec![0u8; response1.wire_size()];
+        {
+            let mut cursor = ParseCursor::new(&mut buf);
+            response1.to_wire(&mut cursor).unwrap();
+        }
+
+        let mut cursor = ParseCursor::new(&mut buf);
+        let response2 = ResponseDraft08::from_wire(&mut cursor).unwrap();
+
+        assert_eq!(response1.sig(), response2.sig());
+        assert_eq!(response1.ver(), response2.ver());
+        assert_eq!(response1.path().as_ref(), response2.path().as_ref());
+        assert_eq!(response1.srep().radi(), response2.srep().radi());
+        assert_eq!(response1.srep().midp(), response2.srep().midp());
+        assert_eq!(response1.srep().root(), response2.srep().root());
+        assert_eq!(response1.indx(), response2.indx());
+    }
+
+    #[test]
+    fn response_draft08_offsets_are_calculated_correctly() {
+        let mut response = ResponseDraft08::default();
+
+        let path = MerklePath::try_from([0x4e; 192].as_slice()).unwrap();
+        response.set_path(path);
+
+        // offsets[0]: SIG = 64
+        // offsets[1]: VER = 64 + 4 = 68
+        // offsets[2]: PATH = 68 + 192 = 260
+        // offsets[3]: SREP = 260 + srep.wire_size()
+        // offsets[4]: CERT = offset[3] + cert.wire_size()
+        assert_eq!(response.header.offsets[0], 64);
+        assert_eq!(response.header.offsets[1], 68);
+        assert_eq!(response.header.offsets[2], 260);
     }
 }

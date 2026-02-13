@@ -20,6 +20,9 @@ pub enum Error {
     #[error("mismatched number of tags: expected {0}, got {1}")]
     MismatchedNumTags(u32, u32),
 
+    #[error("invalid number of tags in request: {actual} (expected {expected})")]
+    InvalidRequestNumTags { actual: u32, expected: &'static str },
+
     #[error("magic value was not 'ROUGHTIM' (0x544f55474854494d): {0:#016x}")]
     UnexpectedMagic(u64),
 

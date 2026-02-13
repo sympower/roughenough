@@ -22,7 +22,7 @@ fn main() {
 
 fn create_wire_request(nonce_value: u8) -> Vec<u8> {
     let nonce = Nonce::from([nonce_value; 32]);
-    let request = Request::new(&nonce);
+    let request = Request::new_draft14(&nonce);
 
     request.as_frame_bytes().unwrap()
 }
@@ -51,7 +51,7 @@ fn create_request_handler() -> RequestHandler {
         ClockSource::System,
         Duration::from_secs(60),
     );
-    let responder = ResponseHandler::new(args.batch_size, ks);
+    let responder = ResponseHandler::new(args.batch_size, ks, ProtocolVersion::RfcDraft14);
 
     RequestHandler::new(responder)
 }

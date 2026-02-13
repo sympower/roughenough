@@ -3,47 +3,47 @@ use roughenough_protocol::ToWire;
 use roughenough_protocol::cursor::ParseCursor;
 use roughenough_protocol::tags::{
     Certificate, MerkleRoot, ProtocolVersion, PublicKey, Signature, SignedResponse,
-    SupportedVersions,
+    SignedResponseDraft08, SupportedVersions,
 };
 use roughenough_protocol::util::ClockSource;
 
-/// RFC 5.2.6: The PUBK tag MUST contain a temporary 32-byte Ed25519 public key
-/// which is used to sign the SREP tag.
+// An online key is a randomly generated Ed25519 key pair with a time-bounded validity period.
+// The long-term identity signs a delegation (DELE) containing the online key's public key,
+// authorizing it to sign responses on behalf of the server. Online keys sign SREP (signed
+// response) messages that authenticate the server's timestamps to clients.
+//
+// Create an online key by calling `LongTermIdentity::make_online_key_draft14()` or
+// `LongTermIdentity::make_online_key_draft08()`.
+
+/// Online key for RFC draft-14 protocol.
 ///
-/// An OnLineKey is a randomly generated key pair signed with the server's `LongTermIdentity`
-/// with a time-bounded validity period. `OnlineKey`s are used to create SREP (signed response)
-/// messages which authenticate the server's responses to clients.
-///
-/// Create an `OnlineKey` by calling `LongTermIdentity::make_online_key()`
-pub struct OnlineKey {
+/// Creates signed responses with 5 tags: VER, RADI, MIDP, VERS, ROOT.
+pub struct OnlineKeyDraft14 {
     signer: OnlineSigner,
     cert: Certificate,
-    version: ProtocolVersion,
     clock_source: ClockSource,
     template_srep: SignedResponse,
     signing_buf: Vec<u8>,
 }
 
-impl OnlineKey {
-    pub fn new(version: ProtocolVersion, clock_source: ClockSource) -> OnlineKey {
-        let mut srep = SignedResponse::default();
-        srep.set_radi(SignedResponse::DEFAULT_RADI_SECONDS);
-        srep.set_vers(&SupportedVersions::from([version].as_ref()));
-        srep.set_ver(version);
+impl OnlineKeyDraft14 {
+    pub fn new(version: ProtocolVersion, clock_source: ClockSource) -> Self {
+        let mut template = SignedResponse::default();
+        template.set_radi(SignedResponse::DEFAULT_RADI_SECONDS);
+        template.set_vers(&SupportedVersions::from([version].as_ref()));
+        template.set_ver(version);
 
-        // Allocate buffer and load signing prefix to be reused for all future signatures
-        let prefix = version.srep_prefix();
-        let mut buf = Vec::with_capacity(prefix.len() + srep.wire_size());
+        let prefix = ProtocolVersion::RfcDraft14.srep_prefix();
+        let mut buf = Vec::with_capacity(prefix.len() + template.wire_size());
         buf.extend_from_slice(prefix);
         buf.resize(buf.capacity(), 0);
 
         Self {
             signer: OnlineSigner::from_random(),
             cert: Certificate::default(),
-            template_srep: srep,
-            signing_buf: buf,
-            version,
             clock_source,
+            template_srep: template,
+            signing_buf: buf,
         }
     }
 
@@ -51,32 +51,31 @@ impl OnlineKey {
         self.cert = cert;
     }
 
-    /// Retrieves the delegation certificate (CERT) associated with this OnlineKey
+    /// Retrieves the delegation certificate (CERT) associated with this online key.
     pub fn cert(&self) -> &Certificate {
         debug_assert!(
             self.cert != Certificate::default(),
-            "logic error to use an OnlineKey without setting a delegation certificate"
+            "logic error to use an online key without setting a delegation certificate"
         );
-
         &self.cert
     }
 
-    /// Retrieves the public key associated with this OnlineKey.
+    /// Retrieves the public key associated with this online key.
     pub fn public_key(&self) -> PublicKey {
         self.signer.public_key()
     }
 
-    /// Retrieves the raw public key bytes associated with this OnlineKey.
+    /// Retrieves the raw public key bytes associated with this online key.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.signer.public_key_bytes()
     }
 
-    /// Signs the provided data using the private key associated with this OnlineKey.
+    /// Signs the provided data using the private key associated with this online key.
     pub fn sign(&self, data: &[u8]) -> [u8; 64] {
         self.signer.sign(data)
     }
 
-    /// Creates a signed response (SREP) and corresponding cryptographic signature (SIG).
+    /// Creates a signed response (SREP) and corresponding cryptographic signature.
     ///
     /// This method generates a `SignedResponse` containing the current timestamp, server radius,
     /// protocol version information, and the provided Merkle root. The SREP is then signed with
@@ -97,10 +96,101 @@ impl OnlineKey {
         srep.set_root(root);
         srep.set_midp(self.clock_source.epoch_seconds());
 
-        let prefix_len = self.version.srep_prefix().len();
+        let prefix_len = ProtocolVersion::RfcDraft14.srep_prefix().len();
         let total_len = prefix_len + srep.wire_size();
 
-        // Serialize into signing_buf, which was appropriately sized at construction
+        let mut cursor = ParseCursor::new(&mut self.signing_buf[prefix_len..total_len]);
+        srep.to_wire(&mut cursor)
+            .expect("SREP serialization should not fail");
+
+        let sig_bytes: [u8; 64] = self.sign(&self.signing_buf[..total_len]);
+        let sig = Signature::from(sig_bytes);
+
+        (srep, sig)
+    }
+}
+
+/// Online key for RFC draft-08 protocol.
+///
+/// Creates signed responses with 3 tags: RADI, MIDP, ROOT.
+pub struct OnlineKeyDraft08 {
+    signer: OnlineSigner,
+    cert: Certificate,
+    clock_source: ClockSource,
+    template_srep: SignedResponseDraft08,
+    signing_buf: Vec<u8>,
+}
+
+impl OnlineKeyDraft08 {
+    pub fn new(clock_source: ClockSource) -> Self {
+        let mut template = SignedResponseDraft08::default();
+        template.set_radi(SignedResponseDraft08::DEFAULT_RADI_SECONDS);
+
+        let prefix = ProtocolVersion::RfcDraft08.srep_prefix();
+        let mut buf = Vec::with_capacity(prefix.len() + template.wire_size());
+        buf.extend_from_slice(prefix);
+        buf.resize(buf.capacity(), 0);
+
+        Self {
+            signer: OnlineSigner::from_random(),
+            cert: Certificate::default(),
+            clock_source,
+            template_srep: template,
+            signing_buf: buf,
+        }
+    }
+
+    pub(crate) fn set_cert(&mut self, cert: Certificate) {
+        self.cert = cert;
+    }
+
+    /// Retrieves the delegation certificate (CERT) associated with this online key.
+    pub fn cert(&self) -> &Certificate {
+        debug_assert!(
+            self.cert != Certificate::default(),
+            "logic error to use an online key without setting a delegation certificate"
+        );
+        &self.cert
+    }
+
+    /// Retrieves the public key associated with this online key.
+    pub fn public_key(&self) -> PublicKey {
+        self.signer.public_key()
+    }
+
+    /// Retrieves the raw public key bytes associated with this online key.
+    pub fn public_key_bytes(&self) -> [u8; 32] {
+        self.signer.public_key_bytes()
+    }
+
+    /// Signs the provided data using the private key associated with this online key.
+    pub fn sign(&self, data: &[u8]) -> [u8; 64] {
+        self.signer.sign(data)
+    }
+
+    /// Creates a signed response (SREP) and corresponding cryptographic signature.
+    ///
+    /// This method generates a `SignedResponseDraft08` containing the current timestamp, server
+    /// radius, and the provided Merkle root. The SREP is then signed with this online key.
+    ///
+    /// # Arguments
+    ///
+    /// * `root` - The Merkle tree root hash that commits to the batch of client requests being
+    ///   processed. This root allows clients to verify their request was included in the batch.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - `SignedResponseDraft08` - The complete SREP structure with timestamp, radius, and root
+    /// - `Signature` - Ed25519 signature over the SREP
+    pub fn make_srep(&mut self, root: &MerkleRoot) -> (SignedResponseDraft08, Signature) {
+        let mut srep = self.template_srep.clone();
+        srep.set_root(root);
+        srep.set_midp(self.clock_source.epoch_seconds());
+
+        let prefix_len = ProtocolVersion::RfcDraft08.srep_prefix().len();
+        let total_len = prefix_len + srep.wire_size();
+
         let mut cursor = ParseCursor::new(&mut self.signing_buf[prefix_len..total_len]);
         srep.to_wire(&mut cursor)
             .expect("SREP serialization should not fail");
@@ -117,7 +207,6 @@ pub(crate) struct OnlineSigner {
 }
 
 impl OnlineSigner {
-    /// Creates a new Signer using a randomly generated Ed25519 key pair.
     pub(crate) fn from_random() -> OnlineSigner {
         let key_pair = Ed25519KeyPair::generate().unwrap();
         OnlineSigner { key_pair }
@@ -135,7 +224,6 @@ impl OnlineSigner {
             .expect("infallible")
     }
 
-    /// Signs the provided data using the private key associated with this Signer.
     pub(crate) fn sign(&self, data: &[u8]) -> [u8; 64] {
         self.key_pair
             .sign(data)
@@ -151,10 +239,7 @@ mod tests {
 
     #[test]
     fn from_random_produces_different_keys() {
-        // Generate multiple keys
         let signers: Vec<_> = (0..10).map(|_| OnlineSigner::from_random()).collect();
-
-        // Verify all public keys are different
         let pubkeys: Vec<_> = signers.iter().map(|s| s.public_key_bytes()).collect();
 
         for i in 0..pubkeys.len() {
@@ -168,14 +253,11 @@ mod tests {
     fn public_key_methods_are_consistent() {
         let signer = OnlineSigner::from_random();
 
-        // Get public key via both methods
         let pubkey = signer.public_key();
         let pubkey_bytes = signer.public_key_bytes();
 
-        // Verify they represent the same key
         assert_eq!(pubkey.as_ref(), &pubkey_bytes);
 
-        // Verify conversion roundtrip
         let pubkey_from_bytes = PublicKey::from(pubkey_bytes);
         assert_eq!(pubkey, pubkey_from_bytes);
     }

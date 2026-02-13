@@ -1,6 +1,7 @@
 #![doc(hidden)]
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+use roughenough_protocol::protocol_ver::ProtocolVersion;
 
 /// Arguments for the client CLI
 #[derive(Parser, Debug)]
@@ -50,13 +51,14 @@ pub struct Args {
     pub num_requests: usize,
 
     #[clap(
+        value_enum,
         short = 'P',
         long,
         value_name = "PROTOCOL",
-        help = "Roughtime version to send; 0 = Google, 14 = RFC draft 14",
-        default_value_t = 14
+        help = "Roughtime version to send: 8 = RFC draft-08, 14 = RFC draft-14",
+        default_value_t = ProtocolVersionArg::V14
     )]
-    pub protocol: usize,
+    pub protocol: ProtocolVersionArg,
 
     #[clap(
         short = 'l',
@@ -134,4 +136,21 @@ pub struct Args {
         default_value_t = false
     )]
     pub zulu: bool,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum ProtocolVersionArg {
+    #[value(name = "8")]
+    V08,
+    #[value(name = "14")]
+    V14,
+}
+
+impl Args {
+    pub fn protocol_version(&self) -> ProtocolVersion {
+        match self.protocol {
+            ProtocolVersionArg::V08 => ProtocolVersion::RfcDraft08,
+            ProtocolVersionArg::V14 => ProtocolVersion::RfcDraft14,
+        }
+    }
 }

@@ -17,6 +17,7 @@ bench = false
 [dependencies]
 thiserror = { workspace = true }
 pastey = { workspace = true }
+portable-atomic = { workspace = true }
 
 [dev-dependencies]
 divan = { workspace = true }

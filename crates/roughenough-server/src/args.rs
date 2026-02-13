@@ -42,7 +42,7 @@ pub struct Args {
     )]
     pub num_threads: u16,
 
-    /// Version of the protocol to use
+    /// Version of the protocol to use: 8 = RFC draft-08, 14 = RFC draft-14
     #[clap(
         value_enum,
         short = 'P',
@@ -124,6 +124,8 @@ pub struct Args {
 
 #[derive(ValueEnum, Debug, Clone)]
 pub enum ProtocolVersionArg {
+    #[value(name = "8")]
+    V08,
     #[value(name = "14")]
     V14,
 }
@@ -157,6 +159,7 @@ impl Args {
 
     pub fn version(&self) -> ProtocolVersion {
         match self.protocol {
+            ProtocolVersionArg::V08 => ProtocolVersion::RfcDraft08,
             ProtocolVersionArg::V14 => ProtocolVersion::RfcDraft14,
         }
     }

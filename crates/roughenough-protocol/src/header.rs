@@ -178,6 +178,7 @@ make_header_n!(2);
 make_header_n!(3);
 make_header_n!(4);
 make_header_n!(5);
+make_header_n!(6);
 make_header_n!(7);
 
 #[cfg(test)]

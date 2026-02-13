@@ -129,7 +129,7 @@ fn worker_task(
     metrics_channel: Sender<WorkerMetrics>,
 ) {
     let sock = bind_socket(&args).expect("Failed to bind socket");
-    let responder = ResponseHandler::new(args.batch_size, key_source);
+    let responder = ResponseHandler::new(args.batch_size, key_source, args.version());
     let metrics_interval = Duration::from_secs(args.metrics_interval);
     let idx = idx as usize;
 

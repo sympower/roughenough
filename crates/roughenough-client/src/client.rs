@@ -50,8 +50,9 @@ use std::time::Duration;
 use roughenough_common::crypto::{make_srv_commitment, random_bytes};
 use roughenough_common::encoding::try_decode_key;
 use roughenough_protocol::cursor::ParseCursor;
+use roughenough_protocol::protocol_ver::ProtocolVersion;
 use roughenough_protocol::request::Request;
-use roughenough_protocol::response::Response;
+use roughenough_protocol::response::{Response, ResponseDraft08};
 use roughenough_protocol::tags::{Nonce, PublicKey, SrvCommitment};
 use roughenough_protocol::{FromFrame, ToFrame};
 
@@ -117,7 +118,7 @@ pub struct ClientBuilder {
     transport: Option<Box<dyn ClientTransport>>,
     timeout: Option<Duration>,
     public_key: Option<PublicKey>,
-    // TODO(stuart) add protocol version, others?...
+    protocol_version: ProtocolVersion,
 }
 
 impl ClientBuilder {
@@ -130,6 +131,7 @@ impl ClientBuilder {
             transport: None,
             timeout: None,
             public_key: None,
+            protocol_version: ProtocolVersion::RfcDraft14,
         }
     }
 
@@ -153,12 +155,20 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the protocol version for requests
+    pub fn protocol_version(mut self, version: ProtocolVersion) -> Self {
+        self.protocol_version = version;
+        self
+    }
+
     pub fn build(self) -> Client {
         let timeout = self.timeout.unwrap_or(Self::DEFAULT_TIMEOUT);
 
-        let transport = self
-            .transport
-            .unwrap_or_else(|| Box::new(UdpTransport::new(timeout)));
+        let transport = self.transport.unwrap_or_else(|| {
+            Box::new(
+                UdpTransport::new(timeout, self.server).expect("failed to create UDP transport"),
+            )
+        });
 
         let srv_commit = self
             .public_key
@@ -176,6 +186,7 @@ impl ClientBuilder {
             server: self.server,
             hostname: self.hostname,
             public_key: self.public_key,
+            protocol_version: self.protocol_version,
         }
     }
 }
@@ -187,6 +198,7 @@ pub struct Client {
     pub(crate) validator: ResponseValidator,
     pub(crate) public_key: Option<PublicKey>,
     pub(crate) srv_commit: Option<SrvCommitment>,
+    pub(crate) protocol_version: ProtocolVersion,
 }
 
 /// Make requests to servers and receive responses
@@ -241,14 +253,32 @@ impl Client {
     /// ```
     pub fn query(&self) -> Result<Measurement, ClientError> {
         let request = self.create_request(None);
-        let nbytes = self.send_request(&request)?;
-        assert_eq!(nbytes, request.frame_size());
+        let bytes_count = self.send_request(&request)?;
 
-        let response = self.recv_response()?;
+        if bytes_count != request.frame_size() {
+            return Err(ClientError::InvalidConfiguration(format!(
+                "partial send: sent {} bytes, expected {}",
+                bytes_count,
+                request.frame_size()
+            )));
+        }
+
         let request_bytes = request.as_frame_bytes()?;
 
-        // validate() ensures that the response is valid and authentic
-        let _midpoint = self.validator.validate(&request_bytes, &response)?;
+        let response = match self.protocol_version {
+            ProtocolVersion::RfcDraft08 => {
+                let (response, response_bytes) = self.recv_response_draft08()?;
+                self.validator
+                    .validate_draft08(&request_bytes, &response, &response_bytes)?;
+                Response::from(response)
+            }
+            ProtocolVersion::RfcDraft14 => {
+                let (response, response_bytes) = self.recv_response_draft14()?;
+                self.validator
+                    .validate_draft14(&request_bytes, &response, &response_bytes)?;
+                response
+            }
+        };
 
         Measurement::builder()
             .server(self.server)
@@ -266,10 +296,16 @@ impl Client {
     fn create_request(&self, nonce: Option<Nonce>) -> Request {
         let nonce = nonce.unwrap_or_else(|| Nonce::from(random_bytes::<32>()));
 
-        if let Some(srv_commit) = &self.srv_commit {
-            Request::new_with_server(&nonce, srv_commit)
-        } else {
-            Request::new(&nonce)
+        match self.protocol_version {
+            ProtocolVersion::RfcDraft08 => Request::new_draft08(&nonce),
+            ProtocolVersion::RfcDraft14 => {
+                // SRV tag (server commitment) is only supported in draft-14
+                if let Some(srv_commit) = &self.srv_commit {
+                    Request::new_draft14_with_server_commitment(&nonce, srv_commit)
+                } else {
+                    Request::new_draft14(&nonce)
+                }
+            }
         }
     }
 
@@ -278,12 +314,42 @@ impl Client {
         self.transport.send(&request_bytes, self.server)
     }
 
-    fn recv_response(&self) -> Result<Response, ClientError> {
+    fn recv_response_draft14(&self) -> Result<(Response, Vec<u8>), ClientError> {
         let mut buf = [0u8; 1024];
-        let (nbytes, _addr) = self.transport.recv(&mut buf)?;
-        let mut cursor = ParseCursor::new(&mut buf[..nbytes]);
-        let response = Response::from_frame(&mut cursor)?;
+        let (bytes_count, _addr) = self.transport.recv(&mut buf)?;
+        let response_bytes = buf[..bytes_count].to_vec();
+        let mut cursor = ParseCursor::new(&mut buf[..bytes_count]);
 
-        Ok(response)
+        let response = Response::from_frame(&mut cursor)?;
+        Ok((response, response_bytes))
+    }
+
+    fn recv_response_draft08(&self) -> Result<(ResponseDraft08, Vec<u8>), ClientError> {
+        let mut buf = [0u8; 1024];
+        let (bytes_count, _addr) = self.transport.recv(&mut buf)?;
+        let response_bytes = buf[..bytes_count].to_vec();
+        let mut cursor = ParseCursor::new(&mut buf[..bytes_count]);
+
+        let response = ResponseDraft08::from_frame(&mut cursor)?;
+        Ok((response, response_bytes))
+    }
+
+    /// Send a request and return the raw response bytes for debugging.
+    /// This bypasses normal parsing and validation.
+    pub fn query_raw(&self) -> Result<Vec<u8>, ClientError> {
+        let request = self.create_request(None);
+        let request_bytes_count = self.send_request(&request)?;
+
+        if request_bytes_count != request.frame_size() {
+            return Err(ClientError::InvalidConfiguration(format!(
+                "partial send: sent {} bytes, expected {}",
+                request_bytes_count,
+                request.frame_size()
+            )));
+        }
+
+        let mut buf = [0u8; 1024];
+        let (response_bytes_count, _addr) = self.transport.recv(&mut buf)?;
+        Ok(buf[..response_bytes_count].to_vec())
     }
 }

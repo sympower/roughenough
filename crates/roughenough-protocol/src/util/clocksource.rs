@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::SeqCst;
 #[cfg(test)]
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ClockSource::{FixedOffset, Mock, System};
+use portable_atomic::AtomicU64;
+use portable_atomic::Ordering::SeqCst;
 
 /// A source of time.
 #[derive(Debug, Clone)]
@@ -25,9 +25,7 @@ impl ClockSource {
     pub fn new_mock(now: u64) -> ClockSource {
         Mock(Arc::new(AtomicU64::new(now)))
     }
-}
 
-impl ClockSource {
     /// RFC 4.1.4: A timestamp is a representation of UTC time as a uint64 count of
     /// seconds since 00:00:00 on 1 January 1970 (the Unix epoch), assuming
     /// every day has 86400 seconds.
