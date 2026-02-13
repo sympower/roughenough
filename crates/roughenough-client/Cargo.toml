@@ -13,6 +13,7 @@ categories = ["network-programming", "command-line-utilities", "date-and-time"]
 [features]
 default = []
 reporting = ["dep:ureq"]
+test-utils = ["roughenough-server/test-utils"]
 
 [[bin]]
 name = "roughenough_client"

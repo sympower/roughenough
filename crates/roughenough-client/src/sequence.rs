@@ -2,8 +2,9 @@
 
 use roughenough_common::crypto::{calculate_chained_nonce, random_bytes};
 use roughenough_protocol::cursor::ParseCursor;
+use roughenough_protocol::protocol_ver::ProtocolVersion;
 use roughenough_protocol::request::Request;
-use roughenough_protocol::response::Response;
+use roughenough_protocol::response::{Response, ResponseDraft08};
 use roughenough_protocol::tags::Nonce;
 use roughenough_protocol::{FromFrame, ToFrame};
 
@@ -28,6 +29,7 @@ pub struct MeasurementSequence {
 }
 
 impl MeasurementSequence {
+    /// Create a new measurement sequence with the given clients.
     pub fn new(clients: Vec<Client>) -> Self {
         Self { clients }
     }
@@ -67,19 +69,40 @@ impl MeasurementSequence {
     ) -> Result<Measurement, ClientError> {
         let (nonce, rand_value) = Self::generate_nonce(&prior_response)?;
 
-        let srv_commit = client.srv_commit.clone().unwrap();
-        let request = Request::new_with_server(&nonce, &srv_commit);
+        // Create request based on protocol version
+        let request = match client.protocol_version {
+            ProtocolVersion::RfcDraft08 => Request::new_draft08(&nonce),
+            ProtocolVersion::RfcDraft14 => {
+                let srv_commit = client.srv_commit.clone().unwrap();
+                Request::new_draft14_with_server_commitment(&nonce, &srv_commit)
+            }
+        };
 
         let request_bytes = request.as_frame_bytes()?;
-        let _nbytes = client.transport.send(&request_bytes, client.server)?;
+        let _request_bytes_count = client.transport.send(&request_bytes, client.server)?;
 
         let mut buf = [0u8; 1024];
-        let (nbytes, _addr) = client.transport.recv(&mut buf)?;
-        let mut cursor = ParseCursor::new(&mut buf[..nbytes]);
-        let response = Response::from_frame(&mut cursor)?;
+        let (response_bytes_count, _addr) = client.transport.recv(&mut buf)?;
+        let response_bytes = buf[..response_bytes_count].to_vec();
+        let mut cursor = ParseCursor::new(&mut buf[..response_bytes_count]);
 
-        // Validate the response
-        let _midpoint = client.validator.validate(&request_bytes, &response)?;
+        // Parse and validate response based on protocol version
+        let response = match client.protocol_version {
+            ProtocolVersion::RfcDraft08 => {
+                let response = ResponseDraft08::from_frame(&mut cursor)?;
+                client
+                    .validator
+                    .validate_draft08(&request_bytes, &response, &response_bytes)?;
+                Response::from(response)
+            }
+            ProtocolVersion::RfcDraft14 => {
+                let response = Response::from_frame(&mut cursor)?;
+                client
+                    .validator
+                    .validate_draft14(&request_bytes, &response, &response_bytes)?;
+                response
+            }
+        };
 
         Measurement::builder()
             .server(client.server)

@@ -1,5 +1,6 @@
 //! Representing lists of Roughtime servers
 
+use roughenough_protocol::protocol_ver::ProtocolVersion;
 use serde::{Deserialize, Serialize};
 
 /// Represents a Roughtime server list
@@ -23,8 +24,14 @@ pub struct Server {
     /// Server name suitable for display to a user
     name: String,
 
-    /// Highest Roughtime version number supported by the server
+    /// Highest Roughtime version number supported by the server (informational only)
     version: String,
+
+    /// Protocol version for wire format. Accepts the same values as the -P command line flag:
+    /// "8" or "draft-08" for RFC draft-08, "14" or "ietf-roughtime" for RFC draft-14.
+    /// Defaults to draft-14 if not specified.
+    #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
+    protocol_version: Option<String>,
 
     /// Signature scheme used by the server (e.g., "ed25519")
     #[serde(rename = "publicKeyType")]
@@ -76,6 +83,9 @@ pub enum Error {
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
+
+    #[error("Invalid protocol version '{value}' for server '{server}': expected '8' or '14'")]
+    InvalidProtocolVersion { server: String, value: String },
 }
 
 impl ServerList {
@@ -186,6 +196,7 @@ impl Server {
         let server = Self {
             name,
             version,
+            protocol_version: None,
             public_key_type,
             public_key,
             addresses,
@@ -231,6 +242,16 @@ impl Server {
             address.validate()?;
         }
 
+        // Validate protocol version if specified
+        if let Some(ref version_str) = self.protocol_version
+            && version_str.parse::<ProtocolVersion>().is_err()
+        {
+            return Err(Error::InvalidProtocolVersion {
+                server: self.name.clone(),
+                value: version_str.clone(),
+            });
+        }
+
         Ok(())
     }
 
@@ -256,6 +277,14 @@ impl Server {
 
     pub fn public_key(&self) -> &str {
         &self.public_key
+    }
+
+    /// Returns the protocol version for this server, defaulting to RfcDraft14 if not specified.
+    pub fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+            .as_ref()
+            .map(|v| v.parse().expect("validated during construction"))
+            .unwrap_or(ProtocolVersion::RfcDraft14)
     }
 }
 
@@ -516,5 +545,93 @@ mod tests {
             Err(e) => panic!("expected Error::InvalidUrl, got {e:?}"),
             Ok(_) => panic!("expected validation to fail"),
         }
+    }
+
+    #[test]
+    fn test_protocol_version_parsing() {
+        // Test parsing from JSON with protocolVersion field
+        let json = r#"{
+            "servers": [{
+                "name": "Draft08 Server",
+                "version": "IETF-Roughtime",
+                "protocolVersion": "8",
+                "publicKeyType": "ed25519",
+                "publicKey": "key==",
+                "addresses": [{"protocol": "udp", "address": "example.com:2002"}]
+            }]
+        }"#;
+        let server_list = ServerList::from_json(json).unwrap();
+        assert_eq!(
+            server_list.servers[0].protocol_version(),
+            ProtocolVersion::RfcDraft08
+        );
+
+        // Test with draft-08 string alias
+        let json = r#"{
+            "servers": [{
+                "name": "Draft08 Server",
+                "version": "IETF-Roughtime",
+                "protocolVersion": "draft-08",
+                "publicKeyType": "ed25519",
+                "publicKey": "key==",
+                "addresses": [{"protocol": "udp", "address": "example.com:2002"}]
+            }]
+        }"#;
+        let server_list = ServerList::from_json(json).unwrap();
+        assert_eq!(
+            server_list.servers[0].protocol_version(),
+            ProtocolVersion::RfcDraft08
+        );
+
+        // Test default to draft-14 when field is missing
+        let json = r#"{
+            "servers": [{
+                "name": "Default Server",
+                "version": "IETF-Roughtime",
+                "publicKeyType": "ed25519",
+                "publicKey": "key==",
+                "addresses": [{"protocol": "udp", "address": "example.com:2002"}]
+            }]
+        }"#;
+        let server_list = ServerList::from_json(json).unwrap();
+        assert_eq!(
+            server_list.servers[0].protocol_version(),
+            ProtocolVersion::RfcDraft14
+        );
+
+        // Test draft-14 explicit
+        let json = r#"{
+            "servers": [{
+                "name": "Draft14 Server",
+                "version": "IETF-Roughtime",
+                "protocolVersion": "14",
+                "publicKeyType": "ed25519",
+                "publicKey": "key==",
+                "addresses": [{"protocol": "udp", "address": "example.com:2002"}]
+            }]
+        }"#;
+        let server_list = ServerList::from_json(json).unwrap();
+        assert_eq!(
+            server_list.servers[0].protocol_version(),
+            ProtocolVersion::RfcDraft14
+        );
+
+        // Test invalid value returns error
+        let json = r#"{
+            "servers": [{
+                "name": "Invalid Server",
+                "version": "IETF-Roughtime",
+                "protocolVersion": "invalid",
+                "publicKeyType": "ed25519",
+                "publicKey": "key==",
+                "addresses": [{"protocol": "udp", "address": "example.com:2002"}]
+            }]
+        }"#;
+        let result = ServerList::from_json(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidProtocolVersion { server, value } if server == "Invalid Server" && value == "invalid")
+        );
     }
 }

@@ -23,9 +23,9 @@ fuzz_target!(|data: &[u8]| {
         let nonce = Nonce::from(fuzz_data.nonce);
         let request = if let Some(srv_commit) = fuzz_data.srv {
             let srv = SrvCommitment::from(srv_commit);
-            Request::new_with_server(&nonce, &srv)
+            Request::new_draft14_with_server(&nonce, &srv)
         } else {
-            Request::new(&nonce)
+            Request::new_draft14(&nonce)
         };
         
         // Encode to framed wire format

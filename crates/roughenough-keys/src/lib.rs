@@ -10,7 +10,7 @@ mod tests {
     use std::time::Duration;
 
     use aws_lc_rs::signature::{ED25519, UnparsedPublicKey};
-    use roughenough_protocol::tags::ProtocolVersion::RfcDraft14;
+    use roughenough_protocol::tags::ProtocolVersion::{RfcDraft08, RfcDraft14};
     use roughenough_protocol::tags::{MerkleRoot, PublicKey, SupportedVersions};
     use roughenough_protocol::util::ClockSource;
     use roughenough_protocol::wire::ToWire;
@@ -50,9 +50,14 @@ mod tests {
         }
     }
 
-    fn generate_ltk() -> LongTermIdentity {
+    fn generate_ltk_draft14() -> LongTermIdentity {
         let seed = MemoryBackend::from_random();
         LongTermIdentity::new(RfcDraft14, Box::new(seed))
+    }
+
+    fn generate_ltk_draft08() -> LongTermIdentity {
+        let seed = MemoryBackend::from_random();
+        LongTermIdentity::new(RfcDraft08, Box::new(seed))
     }
 
     #[test]
@@ -72,11 +77,11 @@ mod tests {
     }
 
     #[test]
-    fn cert_is_created_correctly() {
-        let mut ltk = generate_ltk();
+    fn cert_is_created_correctly_draft14() {
+        let mut ltk = generate_ltk_draft14();
         let now = ClockSource::System.epoch_seconds();
         let clock = ClockSource::new_mock(now);
-        let olk = ltk.make_online_key(&clock, Duration::from_secs(60));
+        let olk = ltk.make_online_key_draft14(&clock, Duration::from_secs(60));
 
         let ltk_pubk = PublicKey::from(ltk.public_key_bytes());
         let verifier = Verifier::from(&ltk_pubk);
@@ -103,11 +108,42 @@ mod tests {
     }
 
     #[test]
-    fn online_key_generates_valid_srep_values() {
-        let mut ltk = generate_ltk();
+    fn cert_is_created_correctly_draft08() {
+        let mut ltk = generate_ltk_draft08();
         let now = ClockSource::System.epoch_seconds();
         let clock = ClockSource::new_mock(now);
-        let mut olk = ltk.make_online_key(&clock, Duration::from_secs(60));
+        let olk = ltk.make_online_key_draft08(&clock, Duration::from_secs(60));
+
+        let ltk_pubk = PublicKey::from(ltk.public_key_bytes());
+        let verifier = Verifier::from(&ltk_pubk);
+
+        let dele = olk.cert().dele();
+        let sig = olk.cert().sig();
+        let mut to_verify = RfcDraft08.dele_prefix().to_vec();
+        to_verify.extend_from_slice(&dele.as_bytes().expect("DELE serialization should not fail"));
+
+        assert!(
+            verifier.verify(&to_verify, sig.as_ref()),
+            "LongTermKey signature on DELE should be valid"
+        );
+        assert_eq!(
+            dele.pubk().as_ref(),
+            olk.public_key().as_ref(),
+            "public key in DELE should match OnlineKey"
+        );
+        assert_eq!(dele.mint(), now, "MINT is the now time");
+        assert!(
+            dele.maxt() as f64 >= now as f64 + 60.0,
+            "MAXT is approximately 60 seconds in the future"
+        );
+    }
+
+    #[test]
+    fn online_key_generates_valid_srep_values_draft14() {
+        let mut ltk = generate_ltk_draft14();
+        let now = ClockSource::System.epoch_seconds();
+        let clock = ClockSource::new_mock(now);
+        let mut olk = ltk.make_online_key_draft14(&clock, Duration::from_secs(60));
 
         let merkle_root = MerkleRoot::default();
         let (srep, sig) = olk.make_srep(&merkle_root);
@@ -121,6 +157,27 @@ mod tests {
 
         let verifier = Verifier::from(&olk.public_key());
         let mut to_verify = RfcDraft14.srep_prefix().to_vec();
+        to_verify.extend_from_slice(&srep.as_bytes().expect("SREP serialization should not fail"));
+        assert!(verifier.verify(to_verify.as_ref(), sig.as_ref()));
+    }
+
+    #[test]
+    fn online_key_generates_valid_srep_values_draft08() {
+        let mut ltk = generate_ltk_draft08();
+        let now = ClockSource::System.epoch_seconds();
+        let clock = ClockSource::new_mock(now);
+        let mut olk = ltk.make_online_key_draft08(&clock, Duration::from_secs(60));
+
+        let merkle_root = MerkleRoot::default();
+        let (srep, sig) = olk.make_srep(&merkle_root);
+
+        // Draft-08 SREP has only 3 tags: RADI, MIDP, ROOT (no VER, no VERS)
+        assert_eq!(srep.root(), &merkle_root);
+        assert_eq!(srep.midp(), clock.epoch_seconds());
+        assert_eq!(srep.radi(), 5);
+
+        let verifier = Verifier::from(&olk.public_key());
+        let mut to_verify = RfcDraft08.srep_prefix().to_vec();
         to_verify.extend_from_slice(&srep.as_bytes().expect("SREP serialization should not fail"));
         assert!(verifier.verify(to_verify.as_ref(), sig.as_ref()));
     }

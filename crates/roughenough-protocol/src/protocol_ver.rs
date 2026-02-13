@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::mem::size_of;
 use std::str::FromStr;
 
-use ProtocolVersion::{Google, Invalid, RfcDraft14};
+use ProtocolVersion::{RfcDraft08, RfcDraft14};
 
 use crate::cursor::ParseCursor;
 use crate::error::Error;
@@ -14,24 +14,31 @@ use crate::wire::{FromWire, ToWire};
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProtocolVersion {
-    Google = 0x00000000,
+    RfcDraft08 = 0x80000008,
     RfcDraft14 = 0x8000000c,
-    Invalid = 0xffffffff,
 }
 
 impl ProtocolVersion {
     pub fn dele_prefix(&self) -> &'static [u8] {
         match self {
-            Google => b"RoughTime v1 delegation signature--\x00",
+            // Draft-08 uses the original context string with trailing dashes
+            RfcDraft08 => b"RoughTime v1 delegation signature--\x00",
+            // Draft-14 removed the trailing dashes
             RfcDraft14 => b"RoughTime v1 delegation signature\x00",
-            Invalid => panic!("invalid version"),
         }
     }
 
     pub fn srep_prefix(&self) -> &'static [u8] {
         match self {
-            Google | RfcDraft14 => b"RoughTime v1 response signature\x00",
-            Invalid => panic!("invalid version"),
+            RfcDraft08 | RfcDraft14 => b"RoughTime v1 response signature\x00",
+        }
+    }
+
+    /// Returns true if this version requires the TYPE tag in requests
+    pub fn requires_type_tag(&self) -> bool {
+        match self {
+            RfcDraft08 => false,
+            RfcDraft14 => true,
         }
     }
 }
@@ -52,7 +59,8 @@ impl FromWire for ProtocolVersion {
     fn from_wire(cursor: &mut ParseCursor) -> Result<Self, Error> {
         let value = cursor.try_get_u32_le()?;
         match value {
-            0x00000000 => Ok(Google),
+            // Accept 0x00000000 (legacy Google) as draft-08 for backward compatibility
+            0x00000000 | 0x80000008 => Ok(RfcDraft08),
             0x8000000c => Ok(RfcDraft14),
             _ => Err(InvalidVersion(value)),
         }
@@ -64,8 +72,8 @@ impl FromStr for ProtocolVersion {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "0" | "google-roughtime" => Ok(Google),
-            "1" | "14" | "ietf-roughtime" => Ok(RfcDraft14),
+            "8" | "draft-08" | "draft08" => Ok(RfcDraft08),
+            "14" | "draft-14" | "draft14" | "ietf-roughtime" => Ok(RfcDraft14),
             _ => Err(InvalidVersion(u32::MAX)),
         }
     }

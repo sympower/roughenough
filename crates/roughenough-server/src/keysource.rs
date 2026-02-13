@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use roughenough_keys::longterm::LongTermIdentity;
-use roughenough_keys::online::onlinekey::OnlineKey;
+use roughenough_keys::online::onlinekey::{OnlineKeyDraft08, OnlineKeyDraft14};
 use roughenough_keys::seed::SeedBackend;
 use roughenough_protocol::tags::{ProtocolVersion, PublicKey};
 use roughenough_protocol::util::ClockSource;
@@ -46,11 +46,18 @@ impl KeySource {
         }
     }
 
-    pub fn make_online_key(&self) -> OnlineKey {
+    pub fn make_online_key_draft14(&self) -> OnlineKeyDraft14 {
         self.identity
             .lock()
             .unwrap()
-            .make_online_key(&self.clock_source, self.validity_length)
+            .make_online_key_draft14(&self.clock_source, self.validity_length)
+    }
+
+    pub fn make_online_key_draft08(&self) -> OnlineKeyDraft08 {
+        self.identity
+            .lock()
+            .unwrap()
+            .make_online_key_draft08(&self.clock_source, self.validity_length)
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -109,14 +116,14 @@ mod tests {
         );
 
         // Create initial key
-        let first_key = key_source.make_online_key();
+        let first_key = key_source.make_online_key_draft14();
         let first_pubkey = first_key.public_key_bytes();
 
         // When: Time advances past key expiration
         clock.set_time(start_time + 61);
 
         // Then: New key should be different from expired one
-        let second_key = key_source.make_online_key();
+        let second_key = key_source.make_online_key_draft14();
         let second_pubkey = second_key.public_key_bytes();
 
         assert_ne!(first_pubkey, second_pubkey);
@@ -161,7 +168,7 @@ mod tests {
                     clock_clone.set_time(current_time);
 
                     // Get current key
-                    let key = key_source_clone.make_online_key();
+                    let key = key_source_clone.make_online_key_draft14();
                     let pubkey = key.public_key_bytes();
 
                     // Track unique keys used
@@ -224,11 +231,11 @@ mod tests {
         );
 
         // Get initial key
-        let key1 = key_source.make_online_key();
+        let key1 = key_source.make_online_key_draft14();
 
         // Advance to rotation time
         clock.set_time(start_time + rotation_interval.as_secs());
-        let key2 = key_source.make_online_key();
+        let key2 = key_source.make_online_key_draft14();
 
         // Verify both keys are valid at rotation boundary
         let key1_valid_until = key1.cert().dele().maxt();

@@ -56,12 +56,36 @@ fn main() {
 }
 
 fn query_single_server(args: &Args, hostname: &String) -> u64 {
-    let port = args.port.unwrap();
+    use std::net::ToSocketAddrs;
 
-    let client = Client::new(hostname, port, args.pub_key.as_deref()).unwrap_or_else(|e| {
-        error!("Error creating client for '{hostname}:{port}': {e}");
-        std::process::exit(-1);
-    });
+    let port = args.port.unwrap();
+    let host_port = format!("{hostname}:{port}");
+    let sock_addr = host_port
+        .to_socket_addrs()
+        .unwrap_or_else(|e| {
+            error!("Error resolving '{host_port}': {e}");
+            std::process::exit(-1);
+        })
+        .next()
+        .unwrap_or_else(|| {
+            error!("Could not find IP address for '{host_port}'");
+            std::process::exit(-1);
+        });
+
+    let mut builder = Client::builder(sock_addr)
+        .hostname(hostname)
+        .timeout(Duration::from_secs(args.timeout as u64))
+        .protocol_version(args.protocol_version());
+
+    if let Some(encoded_key) = &args.pub_key {
+        let pub_key = try_decode_key(encoded_key).unwrap_or_else(|e| {
+            error!("Error decoding public key: {e}");
+            std::process::exit(-1);
+        });
+        builder = builder.public_key(pub_key);
+    }
+
+    let client = builder.build();
 
     let mut midpoint: u64 = 0;
     for _ in 0..args.num_requests {
@@ -194,6 +218,7 @@ fn clients_from_list(server_list: &ServerList, args: &Args) -> Result<Vec<Client
             .hostname(server.name())
             .timeout(timeout)
             .public_key(public_key)
+            .protocol_version(server.protocol_version())
             .build();
 
         clients.push(client);

@@ -129,9 +129,9 @@ impl FuzzRequest {
         let nonce = Nonce::from(self.nonce.clone());
         if self.srv.is_some() {
             let srv = SrvCommitment::from(self.srv.clone().unwrap());
-            Request::new_with_server(&nonce, &srv)
+            Request::new_draft14_with_server(&nonce, &srv)
         } else {
-            Request::new(&nonce)
+            Request::new_draft14(&nonce)
         }
     }
 }

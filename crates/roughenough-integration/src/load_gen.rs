@@ -3,8 +3,8 @@
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +12,7 @@ use clap::Parser;
 use data_encoding::{
     BASE64, BASE64_NOPAD, BASE64URL, BASE64URL_NOPAD, DecodeError, DecodeKind, HEXLOWER, HEXUPPER,
 };
+use portable_atomic::AtomicU64;
 use roughenough_protocol::ToFrame;
 use roughenough_protocol::request::Request;
 use roughenough_protocol::tags::{Nonce, PublicKey};
@@ -152,7 +153,6 @@ impl Stats {
         self.num_responses.store(0, Relaxed);
         self.bytes_received.store(0, Relaxed);
         self.num_timeouts.store(0, Relaxed);
-        self.num_errors.store(0, Relaxed);
         self.last_update.store(0, Relaxed);
     }
 }
@@ -198,7 +198,7 @@ fn run_worker(idx: usize, args: Args, _public_key: Option<PublicKey>, stats: Arc
     info!("worker {idx} starting, {source:?}");
 
     let nonce = Nonce::from(random_bytes::<32>());
-    let request = Request::new(&nonce);
+    let request = Request::new_draft14(&nonce);
     let request_bytes = request.as_frame_bytes().unwrap();
 
     let target_addr: SocketAddr = format!("{}:{}", args.hostname, args.port).parse().unwrap();

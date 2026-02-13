@@ -39,7 +39,7 @@ mod request {
             .with_inputs(|| vec![0u8; 1024])
             .bench_local_refs(|buf| {
                 let mut cursor = ParseCursor::new(buf);
-                let r = divan::black_box(Request::new(&nonce));
+                let r = divan::black_box(Request::new_draft14(&nonce));
                 black_box_drop(r.to_wire(&mut cursor).unwrap())
             });
     }

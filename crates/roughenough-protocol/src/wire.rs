@@ -12,10 +12,9 @@ pub const FRAME_MAGIC: u64 = 0x524f55474854494d;
 /// Overhead of framing: 8-byte magic + 4-byte length
 pub const FRAME_OVERHEAD: usize = 12;
 
-/// All Roughtime messages will be *at least* this many bytes. A Response message is always
-/// at least 404 bytes long and could be longer as the PATH and SREP values are variable-length.
-/// Requests are exactly 1024 bytes long.
-pub const MINIMUM_FRAME_SIZE: usize = 404;
+/// Minimum frame size for sanity checking. Draft-08 responses can be smaller than draft-14.
+/// Actual validation happens during message parsing.
+pub const MINIMUM_FRAME_SIZE: usize = 100;
 
 /// Implementations can serialize themselves into the Roughtime wire format
 pub trait ToWire {

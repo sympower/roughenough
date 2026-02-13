@@ -36,6 +36,7 @@ google-cloud-secretmanager-v1 = "1.2"
 libc = "0.2.177"
 mio = "1.1"
 pastey = "0.2"
+portable-atomic = "1.11"
 serde = "1.0"
 serde_json = "1.0"
 socket2 = "0.6"
@@ -90,3 +91,13 @@ codegen-units = 1
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release-lto"
+
+# Minimal binary size profile
+[profile.release-min-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false

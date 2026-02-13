@@ -29,10 +29,9 @@ use crate::wire::{FromWire, FromWireN, ToWire};
 /// MUST contain the version number specified in the VER tag.  It MUST
 /// NOT contain more than 32 version numbers.
 /// ```
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct VersionList {
-    num_versions: usize,
-    versions: [ProtocolVersion; VersionList::MAX_VERSIONS],
+    versions: Vec<ProtocolVersion>,
 }
 
 impl VersionList {
@@ -40,20 +39,11 @@ impl VersionList {
     pub const MAX_VERSIONS: usize = 32;
 }
 
-impl Default for VersionList {
-    fn default() -> Self {
-        Self {
-            num_versions: 0,
-            versions: [ProtocolVersion::Invalid; Self::MAX_VERSIONS],
-        }
-    }
-}
-
 impl Debug for VersionList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VersionList")
-            .field("num_versions", &self.num_versions)
-            .field("versions", &self.versions())
+            .field("num_versions", &self.versions.len())
+            .field("versions", &self.versions)
             .finish()
     }
 }
@@ -61,32 +51,27 @@ impl Debug for VersionList {
 impl VersionList {
     pub fn new(versions: &[ProtocolVersion]) -> Self {
         let count = std::cmp::min(versions.len(), Self::MAX_VERSIONS);
-
-        let mut vers = VersionList {
-            num_versions: count,
-            ..VersionList::default()
-        };
-        vers.versions[..count].copy_from_slice(&versions[..count]);
-
-        vers
+        Self {
+            versions: versions[..count].to_vec(),
+        }
     }
 
     pub fn versions(&self) -> &[ProtocolVersion] {
-        &self.versions[..self.num_versions]
+        &self.versions
     }
 
     pub fn is_supported(&self, version: ProtocolVersion) -> bool {
-        self.versions().contains(&version)
+        self.versions.contains(&version)
     }
 }
 
 impl ToWire for VersionList {
     fn wire_size(&self) -> usize {
-        self.num_versions * size_of::<ProtocolVersion>()
+        self.versions.len() * size_of::<ProtocolVersion>()
     }
 
     fn to_wire(&self, cursor: &mut ParseCursor) -> Result<(), Error> {
-        for version in &self.versions[..self.num_versions] {
+        for version in &self.versions {
             version.to_wire(cursor)?;
         }
         Ok(())
@@ -102,27 +87,26 @@ impl FromWire for VersionList {
 impl FromWireN for VersionList {
     fn from_wire_n(cursor: &mut ParseCursor, n: usize) -> Result<Self, Error> {
         let mut remaining = n;
-        let mut vers = VersionList::default();
-        let mut prior_version = ProtocolVersion::Google;
-        let mut index = 0;
+        let mut versions = Vec::new();
+        let mut prior_version: Option<ProtocolVersion> = None;
 
-        while remaining > 0 && index < Self::MAX_VERSIONS {
+        while remaining > 0 && versions.len() < Self::MAX_VERSIONS {
             let version = ProtocolVersion::from_wire(cursor)?;
 
             // This implementation verifies that the versions are in ascending order,
             // but does not consider duplicates an error. That might change in the future.
-            if version < prior_version {
-                return Err(UnorderedVersion(index as u32, version as u32));
+            if let Some(prior) = prior_version
+                && version < prior
+            {
+                return Err(UnorderedVersion(versions.len() as u32, version as u32));
             }
 
-            vers.versions[index] = version;
-            prior_version = version;
-            index += 1;
+            prior_version = Some(version);
             remaining -= version.wire_size();
+            versions.push(version);
         }
 
-        vers.num_versions = index;
-        Ok(vers)
+        Ok(Self { versions })
     }
 }
 
@@ -138,7 +122,8 @@ mod tests {
 
     #[test]
     fn wire_roundtrip() {
-        let versions = VersionList::new(&[ProtocolVersion::Google, ProtocolVersion::RfcDraft14]);
+        let versions =
+            VersionList::new(&[ProtocolVersion::RfcDraft08, ProtocolVersion::RfcDraft14]);
 
         let wire_size = versions.wire_size();
         let mut buf = vec![0u8; wire_size];
@@ -162,9 +147,9 @@ mod tests {
 
     #[test]
     fn new() {
-        let versions = VersionList::new(&[ProtocolVersion::Google]);
-        assert_eq!(versions.versions(), &[ProtocolVersion::Google]);
-        assert!(versions.is_supported(ProtocolVersion::Google));
+        let versions = VersionList::new(&[ProtocolVersion::RfcDraft08]);
+        assert_eq!(versions.versions(), &[ProtocolVersion::RfcDraft08]);
+        assert!(versions.is_supported(ProtocolVersion::RfcDraft08));
         assert!(!versions.is_supported(ProtocolVersion::RfcDraft14));
     }
 
@@ -172,7 +157,7 @@ mod tests {
     fn zero_versions() {
         let versions = VersionList::new(&[]);
         assert!(versions.versions().is_empty());
-        assert!(!versions.is_supported(ProtocolVersion::Google));
+        assert!(!versions.is_supported(ProtocolVersion::RfcDraft08));
         assert!(!versions.is_supported(ProtocolVersion::RfcDraft14));
     }
 
@@ -190,8 +175,9 @@ mod tests {
 
     #[test]
     fn versions_out_of_order() {
-        // Create a VersionList with versions in descending order (RfcDraft14 > Google)
-        let versions = VersionList::new(&[ProtocolVersion::RfcDraft14, ProtocolVersion::Google]);
+        // Create a VersionList with versions in descending order (RfcDraft14 > RfcDraft08)
+        let versions =
+            VersionList::new(&[ProtocolVersion::RfcDraft14, ProtocolVersion::RfcDraft08]);
 
         // Serialize to wire format
         let mut buf = vec![0u8; versions.wire_size()];

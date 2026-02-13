@@ -12,6 +12,7 @@ categories = ["development-tools"]
 
 [dependencies]
 roughenough-client = { workspace = true }
+roughenough-common = { workspace = true }
 roughenough-merkle = { workspace = true }
 roughenough-protocol = { workspace = true }
 roughenough-server = { workspace = true, features = ["test-utils"] }
@@ -21,6 +22,7 @@ clap = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
 libc = { workspace = true }
+portable-atomic = { workspace = true }
 
 [[bin]]
 name = "roughenough_integration_test"
