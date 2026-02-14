@@ -134,11 +134,10 @@ fn query_multiple_servers(args: &Args, list_file: &String) -> u64 {
         if args.send_report
             && let Some(report_url) = server_list.reporting_url()
         {
-            info!("Sending malfeasance report to: {}", report_url);
-
             for violation in &violations {
                 let report = MalfeasanceReport::from_violation(violation);
-                if let Err(e) = report.submit(report_url) {
+                if let Err(e) = report.submit(report_url, args.report_timeout, args.report_retries)
+                {
                     error!("Failed to send malfeasance report: {e}");
                 }
             }

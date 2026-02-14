@@ -103,28 +103,64 @@ impl MalfeasanceReport {
         MalfeasanceReport { responses }
     }
 
-    /// POSTs the malfeasance report to the specified URL
+    /// POSTs the malfeasance report to the specified URL with configurable timeout and retries.
+    ///
+    /// When `retries > 0`, failed submissions are retried with exponential backoff starting
+    /// at 10 seconds (per RFC 8.4) and doubling each attempt: 10s, 20s, 40s, ...
     #[cfg(feature = "reporting")]
-    pub fn submit(&self, url: &str) -> Result<(), ReportingError> {
+    pub fn submit(&self, url: &str, timeout_secs: u64, retries: u32) -> Result<(), ReportingError> {
+        use std::time::Duration;
+
+        // RFC 8.4: "retry with a minimum backoff interval of ten seconds"
+        const MIN_BACKOFF_SECS: u64 = 10;
+
         info!("Sending malfeasance report to {url}");
 
-        match ureq::post(url)
-            .content_type("application/json")
-            .send_json(self)
-        {
-            Ok(_response) => {
-                info!("Successfully sent malfeasance report");
-                Ok(())
-            }
-            Err(e) => {
-                error!("failed to submit report: {e}");
-                Err(HttpError(e.to_string()))
+        let timeout = Duration::from_secs(timeout_secs);
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(timeout))
+            .build()
+            .new_agent();
+
+        let mut attempts = 0;
+        let mut backoff_secs = MIN_BACKOFF_SECS;
+
+        loop {
+            let result = agent
+                .post(url)
+                .content_type("application/json")
+                .send_json(self);
+
+            match result {
+                Ok(_response) => {
+                    info!("Successfully sent malfeasance report");
+                    return Ok(());
+                }
+                Err(e) => {
+                    attempts += 1;
+                    if attempts > retries {
+                        error!("Failed to submit report after {} attempts: {e}", attempts);
+                        return Err(HttpError(e.to_string()));
+                    }
+
+                    info!(
+                        "Report submission failed (attempt {}), retrying in {}s: {e}",
+                        attempts, backoff_secs
+                    );
+                    std::thread::sleep(Duration::from_secs(backoff_secs));
+                    backoff_secs *= 2; // Exponential backoff
+                }
             }
         }
     }
 
     #[cfg(not(feature = "reporting"))]
-    pub fn submit(&self, _url: &str) -> Result<(), ReportingError> {
+    pub fn submit(
+        &self,
+        _url: &str,
+        _timeout_secs: u64,
+        _retries: u32,
+    ) -> Result<(), ReportingError> {
         info!("Report submission is disabled. Recompile with the 'reporting' feature to enable.");
         Err(HttpError("Reporting is disabled".to_string()))
     }
