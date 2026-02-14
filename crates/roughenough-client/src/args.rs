@@ -72,9 +72,9 @@ pub struct Args {
         short = 'u',
         long,
         value_name = "N",
-        help = "Number of different servers to query",
+        help = "Number of different servers to query (RFC section 10 requires at least 3)",
         requires = "server_list",
-        default_value_t = 3
+        default_value_t = crate::sequence::MeasurementSequence::MIN_SERVERS
     )]
     pub num_unique_servers: usize,
 
@@ -82,9 +82,9 @@ pub struct Args {
         short = 'r',
         long,
         value_name = "N",
-        help = "Number of times to repeat the chained measurement sequence",
+        help = "Number of times to repeat the chained measurement sequence (RFC section 8.2)",
         requires = "server_list",
-        default_value_t = 2
+        default_value_t = crate::sequence::MeasurementSequence::DEFAULT_ROUNDS
     )]
     pub num_measurement_rounds: usize,
 
