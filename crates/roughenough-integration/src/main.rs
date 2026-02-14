@@ -199,6 +199,18 @@ fn main() {
         println!("=== [{build_mode}] CLI --dump-console validation failure test PASSED\n");
     }
 
+    // Test 11: CLI --dump-dir writes raw bytes to files
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI --dump-dir test...");
+
+        if !test_cli_dump_to_file(build_mode) {
+            eprintln!("=== [{build_mode}] CLI --dump-dir test FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI --dump-dir test PASSED\n");
+    }
+
     println!("=== All end-to-end integration tests PASSED");
 }
 
@@ -1055,4 +1067,129 @@ fn test_cli_dump_validation_failure(build_mode: &str) -> bool {
             false
         }
     }
+}
+
+/// Test that --dump-dir writes raw bytes to files
+fn test_cli_dump_to_file(build_mode: &str) -> bool {
+    let server_path = format!("target/{build_mode}/roughenough_server");
+    let client_path = format!("target/{build_mode}/roughenough_client");
+
+    // Start a server
+    let mut server = match start_server(&server_path, 2033, "14") {
+        Some(s) => s,
+        None => return false,
+    };
+
+    thread::sleep(Duration::from_millis(200));
+
+    if !server.check_running() {
+        return false;
+    }
+
+    let dump_dir = format!("/tmp/roughenough-dump-test-{}", std::process::id());
+
+    // Run client with --dump-dir
+    println!("    Running client with --dump-dir...");
+    let result = Command::new(&client_path)
+        .args([
+            "127.0.0.1",
+            "2033",
+            "-k",
+            TEST_PUBLIC_KEY,
+            "--dump-dir",
+            &dump_dir,
+        ])
+        .output();
+
+    let success = match result {
+        Ok(output) => {
+            if !output.status.success() {
+                eprintln!("    ERROR: Client should have succeeded");
+                eprintln!(
+                    "    Exit code: {}, stderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                false
+            } else {
+                // Find the request and response files in the directory
+                let entries: Vec<_> = match std::fs::read_dir(&dump_dir) {
+                    Ok(dir) => dir.filter_map(|e| e.ok()).collect(),
+                    Err(e) => {
+                        eprintln!("    ERROR: Failed to read dump directory: {e}");
+                        return false;
+                    }
+                };
+
+                let request_file = entries
+                    .iter()
+                    .find(|e| e.file_name().to_string_lossy().ends_with("-request.bin"));
+                let response_file = entries
+                    .iter()
+                    .find(|e| e.file_name().to_string_lossy().ends_with("-response.bin"));
+
+                match (request_file, response_file) {
+                    (Some(req), Some(resp)) => {
+                        let request_bytes = match std::fs::read(req.path()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                eprintln!("    ERROR: Failed to read request file: {e}");
+                                return false;
+                            }
+                        };
+
+                        let response_bytes = match std::fs::read(resp.path()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                eprintln!("    ERROR: Failed to read response file: {e}");
+                                return false;
+                            }
+                        };
+
+                        // Request should be exactly 1024 bytes (Roughtime request size)
+                        let request_ok = request_bytes.len() == 1024;
+                        // Response should have ROUGHTIM magic
+                        let response_ok =
+                            response_bytes.len() >= 12 && &response_bytes[0..8] == b"ROUGHTIM";
+
+                        if request_ok && response_ok {
+                            println!(
+                                "    Request file: {} bytes, Response file: {} bytes",
+                                request_bytes.len(),
+                                response_bytes.len()
+                            );
+                            true
+                        } else {
+                            eprintln!("    ERROR: File contents invalid");
+                            eprintln!("    Request size: {} (expected 1024)", request_bytes.len());
+                            eprintln!(
+                                "    Response has magic: {}",
+                                response_bytes.len() >= 8 && &response_bytes[0..8] == b"ROUGHTIM"
+                            );
+                            false
+                        }
+                    }
+                    _ => {
+                        eprintln!(
+                            "    ERROR: Expected request and response files in dump directory"
+                        );
+                        eprintln!(
+                            "    Found: {:?}",
+                            entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+                        );
+                        false
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("    Failed to run client: {e}");
+            false
+        }
+    };
+
+    // Clean up temp directory
+    let _ = std::fs::remove_dir_all(&dump_dir);
+
+    success
 }

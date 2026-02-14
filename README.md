@@ -134,6 +134,9 @@ cargo run --bin roughenough_client -- roughtime.int08h.com 2003 -P 14      # Que
 
 # Protocol debugging - dump raw bytes to console
 cargo run --bin roughenough_client -- roughtime.int08h.com 2003 --dump-console
+
+# Protocol debugging - dump raw bytes to files
+cargo run --bin roughenough_client -- roughtime.int08h.com 2003 --dump-dir /tmp/dumps
 ```
 
 Query multiple servers from an RFC compliant JSON list:
