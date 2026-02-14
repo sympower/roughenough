@@ -131,6 +131,9 @@ cargo run --bin roughenough_client -- roughtime.int08h.com 2003 --zulu   # ISO 8
 # Specify protocol version (0=Google, 8=draft-08, 14=draft-14)
 cargo run --bin roughenough_client -- roughtime.cloudflare.com 2003 -P 8   # Query draft-08 server
 cargo run --bin roughenough_client -- roughtime.int08h.com 2003 -P 14      # Query draft-14 server
+
+# Protocol debugging - dump raw bytes to console
+cargo run --bin roughenough_client -- roughtime.int08h.com 2003 --dump-console
 ```
 
 Query multiple servers from an RFC compliant JSON list:

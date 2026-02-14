@@ -252,43 +252,8 @@ impl Client {
     /// println!("Server's time, epoch: {}", measurement.midpoint());
     /// ```
     pub fn query(&self) -> Result<Measurement, ClientError> {
-        let request = self.create_request(None);
-        let bytes_count = self.send_request(&request)?;
-
-        if bytes_count != request.frame_size() {
-            return Err(ClientError::InvalidConfiguration(format!(
-                "partial send: sent {} bytes, expected {}",
-                bytes_count,
-                request.frame_size()
-            )));
-        }
-
-        let request_bytes = request.as_frame_bytes()?;
-
-        let response = match self.protocol_version {
-            ProtocolVersion::RfcDraft08 => {
-                let (response, response_bytes) = self.recv_response_draft08()?;
-                self.validator
-                    .validate_draft08(&request_bytes, &response, &response_bytes)?;
-                Response::from(response)
-            }
-            ProtocolVersion::RfcDraft14 => {
-                let (response, response_bytes) = self.recv_response_draft14()?;
-                self.validator
-                    .validate_draft14(&request_bytes, &response, &response_bytes)?;
-                response
-            }
-        };
-
-        Measurement::builder()
-            .server(self.server)
-            .hostname(self.hostname.clone())
-            .public_key(self.public_key)
-            .request(request)
-            .response(response)
-            .rand_value(None)
-            .prior_response(None)
-            .build()
+        let (result, _, _) = self.query_raw()?;
+        result
     }
 
     /// Create a new Roughtime [Request] using the provided [Nonce], or generate a random nonce
@@ -309,47 +274,76 @@ impl Client {
         }
     }
 
-    fn send_request(&self, request: &Request) -> Result<usize, ClientError> {
+    fn send_request(&self, request: &Request) -> Result<Vec<u8>, ClientError> {
         let request_bytes = request.as_frame_bytes()?;
-        self.transport.send(&request_bytes, self.server)
-    }
+        let bytes_sent_count = self.transport.send(&request_bytes, self.server)?;
 
-    fn recv_response_draft14(&self) -> Result<(Response, Vec<u8>), ClientError> {
-        let mut buf = [0u8; 1024];
-        let (bytes_count, _addr) = self.transport.recv(&mut buf)?;
-        let response_bytes = buf[..bytes_count].to_vec();
-        let mut cursor = ParseCursor::new(&mut buf[..bytes_count]);
-
-        let response = Response::from_frame(&mut cursor)?;
-        Ok((response, response_bytes))
-    }
-
-    fn recv_response_draft08(&self) -> Result<(ResponseDraft08, Vec<u8>), ClientError> {
-        let mut buf = [0u8; 1024];
-        let (bytes_count, _addr) = self.transport.recv(&mut buf)?;
-        let response_bytes = buf[..bytes_count].to_vec();
-        let mut cursor = ParseCursor::new(&mut buf[..bytes_count]);
-
-        let response = ResponseDraft08::from_frame(&mut cursor)?;
-        Ok((response, response_bytes))
-    }
-
-    /// Send a request and return the raw response bytes for debugging.
-    /// This bypasses normal parsing and validation.
-    pub fn query_raw(&self) -> Result<Vec<u8>, ClientError> {
-        let request = self.create_request(None);
-        let request_bytes_count = self.send_request(&request)?;
-
-        if request_bytes_count != request.frame_size() {
+        if bytes_sent_count != request_bytes.len() {
             return Err(ClientError::InvalidConfiguration(format!(
                 "partial send: sent {} bytes, expected {}",
-                request_bytes_count,
-                request.frame_size()
+                bytes_sent_count,
+                request_bytes.len()
             )));
         }
 
-        let mut buf = [0u8; 1024];
-        let (response_bytes_count, _addr) = self.transport.recv(&mut buf)?;
-        Ok(buf[..response_bytes_count].to_vec())
+        Ok(request_bytes)
+    }
+
+    /// Query and return raw bytes along with the validation result.
+    /// Returns bytes even if validation fails, useful for debugging.
+    #[allow(clippy::type_complexity)]
+    pub fn query_raw(
+        &self,
+    ) -> Result<(Result<Measurement, ClientError>, Vec<u8>, Vec<u8>), ClientError> {
+        let request = self.create_request(None);
+        let request_bytes = self.send_request(&request)?;
+
+        let mut response_bytes = vec![0u8; 1024];
+        let (bytes_received_count, _addr) = self.transport.recv(&mut response_bytes)?;
+        response_bytes.truncate(bytes_received_count);
+
+        let validation_result =
+            self.validate_response(&request, &request_bytes, &mut response_bytes);
+
+        Ok((validation_result, request_bytes, response_bytes))
+    }
+
+    /// Internal helper to validate a response
+    fn validate_response(
+        &self,
+        request: &Request,
+        request_bytes: &[u8],
+        response_bytes: &mut Vec<u8>,
+    ) -> Result<Measurement, ClientError> {
+        let response = match self.protocol_version {
+            ProtocolVersion::RfcDraft08 => {
+                let response = {
+                    let mut cursor = ParseCursor::new(response_bytes.as_mut_slice());
+                    ResponseDraft08::from_frame(&mut cursor)?
+                };
+                self.validator
+                    .validate_draft08(request_bytes, &response, response_bytes)?;
+                Response::from(response)
+            }
+            ProtocolVersion::RfcDraft14 => {
+                let response = {
+                    let mut cursor = ParseCursor::new(response_bytes.as_mut_slice());
+                    Response::from_frame(&mut cursor)?
+                };
+                self.validator
+                    .validate_draft14(request_bytes, &response, response_bytes)?;
+                response
+            }
+        };
+
+        Measurement::builder()
+            .server(self.server)
+            .hostname(self.hostname.clone())
+            .public_key(self.public_key)
+            .request(request.clone())
+            .response(response)
+            .rand_value(None)
+            .prior_response(None)
+            .build()
     }
 }

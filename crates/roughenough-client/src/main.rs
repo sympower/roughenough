@@ -14,6 +14,7 @@ use roughenough_client::sequence::MeasurementSequence;
 use roughenough_client::server_list::ServerList;
 use roughenough_client::{CausalityViolation, Client, ResponseValidator, server_list};
 use roughenough_common::encoding::try_decode_key;
+use roughenough_protocol::tag::Tag;
 use tracing::{debug, error, info, warn};
 
 #[derive(thiserror::Error, Debug)]
@@ -56,8 +57,6 @@ fn main() {
 }
 
 fn query_single_server(args: &Args, hostname: &String) -> u64 {
-    use std::net::ToSocketAddrs;
-
     let port = args.port.unwrap();
     let host_port = format!("{hostname}:{port}");
     let sock_addr = host_port
@@ -89,8 +88,20 @@ fn query_single_server(args: &Args, hostname: &String) -> u64 {
 
     let mut midpoint: u64 = 0;
     for _ in 0..args.num_requests {
-        let measurement = client.query().unwrap_or_else(|e| {
-            error!("Error querying '{hostname}:{port}': {e}");
+        let (result, request_bytes, response_bytes) = client.query_raw().unwrap_or_else(|e| {
+            error!("Failed to reach '{hostname}:{port}': {e}");
+            std::process::exit(-1);
+        });
+
+        if args.dump_console {
+            dump_raw_frame(&request_bytes, "Request dump");
+            println!();
+            dump_raw_frame(&response_bytes, "Response dump");
+            println!();
+        }
+
+        let measurement = result.unwrap_or_else(|e| {
+            error!("Validation failed for '{hostname}:{port}': {e}");
             std::process::exit(-1);
         });
 
@@ -98,7 +109,6 @@ fn query_single_server(args: &Args, hostname: &String) -> u64 {
         midpoint = measurement.midpoint();
     }
 
-    // Return the last midpoint received
     midpoint
 }
 
@@ -339,4 +349,180 @@ fn display_measurement(args: &Args, measurement: &Measurement) {
     };
 
     info!("{}", output);
+}
+
+/// Parsed raw frame info for protocol debugging.
+/// Used for both requests and responses since they share the same wire format.
+#[derive(Debug)]
+struct RawFrameInfo {
+    magic: [u8; 8],
+    frame_length: u32,
+    num_tags: u32,
+    offsets: Vec<u32>,
+    tags: Vec<(u32, String)>,
+    values_start: usize,
+}
+
+impl RawFrameInfo {
+    /// Sanity check limit for tag count to reject malformed data
+    const MAX_TAGS: u32 = 20;
+
+    /// Parse raw frame bytes into structured info.
+    /// Returns None if the bytes are too short or malformed.
+    fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 {
+            return None;
+        }
+
+        let magic: [u8; 8] = bytes[0..8].try_into().ok()?;
+        let frame_length = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+
+        let msg_start = 12;
+        let num_tags = u32::from_le_bytes([
+            bytes[msg_start],
+            bytes[msg_start + 1],
+            bytes[msg_start + 2],
+            bytes[msg_start + 3],
+        ]);
+
+        if num_tags == 0 || num_tags > Self::MAX_TAGS {
+            return None;
+        }
+
+        let num_offsets = (num_tags - 1) as usize;
+        let offsets_start = msg_start + 4;
+        let offsets_end = offsets_start + num_offsets * 4;
+
+        if bytes.len() < offsets_end {
+            return None;
+        }
+
+        let mut offsets = Vec::with_capacity(num_offsets);
+        for i in 0..num_offsets {
+            let offset_pos = offsets_start + i * 4;
+            let offset = u32::from_le_bytes([
+                bytes[offset_pos],
+                bytes[offset_pos + 1],
+                bytes[offset_pos + 2],
+                bytes[offset_pos + 3],
+            ]);
+            offsets.push(offset);
+        }
+
+        let tags_start = offsets_end;
+        let tags_end = tags_start + (num_tags as usize) * 4;
+
+        if bytes.len() < tags_end {
+            return None;
+        }
+
+        let mut tags = Vec::with_capacity(num_tags as usize);
+        for i in 0..num_tags as usize {
+            let tag_pos = tags_start + i * 4;
+            let tag_bytes = [
+                bytes[tag_pos],
+                bytes[tag_pos + 1],
+                bytes[tag_pos + 2],
+                bytes[tag_pos + 3],
+            ];
+            let tag_value = u32::from_be_bytes(tag_bytes);
+            let tag_str = String::from_utf8_lossy(&tag_bytes)
+                .trim_end_matches('\0')
+                .to_string();
+            tags.push((tag_value, tag_str));
+        }
+
+        Some(Self {
+            magic,
+            frame_length,
+            num_tags,
+            offsets,
+            tags,
+            values_start: tags_end,
+        })
+    }
+}
+
+/// Dump raw frame bytes for protocol debugging.
+fn dump_raw_frame(bytes: &[u8], label: &str) {
+    let header_len = label.len() + 8; // "=== " (4) + label + " ===" (4)
+    let footer = "=".repeat(header_len);
+
+    println!("=== {} ===", label);
+    println!("Total bytes: {}", bytes.len());
+
+    let info = match RawFrameInfo::parse(bytes) {
+        Some(info) => info,
+        None => {
+            println!("Error: {} too short or malformed", label);
+            println!("{}", footer);
+            return;
+        }
+    };
+
+    let magic_str = String::from_utf8_lossy(&info.magic);
+    println!("Frame magic: {:?} ({})", info.magic, magic_str);
+    println!("Frame length: {} bytes", info.frame_length);
+    println!("Number of tags: {}", info.num_tags);
+
+    println!("Offsets ({}):", info.offsets.len());
+    for (i, offset) in info.offsets.iter().enumerate() {
+        println!("  [{}]: {}", i, offset);
+    }
+
+    println!("Tags ({}):", info.num_tags);
+    for (i, (tag_value, tag_str)) in info.tags.iter().enumerate() {
+        let tag_result = Tag::try_from(*tag_value);
+        match tag_result {
+            Ok(tag) => println!("  [{}]: {:?} ({})", i, tag, tag_str),
+            Err(_) => println!("  [{}]: UNKNOWN 0x{:08x} ({})", i, tag_value, tag_str),
+        }
+    }
+
+    println!(
+        "Values start at byte: {} (frame offset {})",
+        info.values_start,
+        info.values_start - 12
+    );
+    println!("{}", footer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_raw_frame_draft14_response() {
+        let bytes = include_bytes!("../../roughenough-protocol/testdata/rfc-response.071039e5");
+        let info = RawFrameInfo::parse(bytes).expect("should parse");
+
+        assert_eq!(&info.magic, b"ROUGHTIM");
+        assert_eq!(info.num_tags, 7);
+        assert_eq!(info.offsets.len(), 6);
+
+        // Check expected tags for draft-14: SIG, NONC, TYPE, PATH, SREP, CERT, INDX
+        let tag_names: Vec<&str> = info.tags.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(
+            tag_names,
+            vec!["SIG", "NONC", "TYPE", "PATH", "SREP", "CERT", "INDX"]
+        );
+    }
+
+    #[test]
+    fn parse_raw_frame_too_short() {
+        let bytes = [0u8; 10]; // Too short
+        assert!(RawFrameInfo::parse(&bytes).is_none());
+    }
+
+    #[test]
+    fn parse_raw_frame_invalid_tag_count() {
+        let mut bytes =
+            include_bytes!("../../roughenough-protocol/testdata/rfc-response.071039e5").to_vec();
+        // Set tag count to 0
+        bytes[12] = 0;
+        bytes[13] = 0;
+        bytes[14] = 0;
+        bytes[15] = 0;
+        assert!(RawFrameInfo::parse(&bytes).is_none());
+    }
 }

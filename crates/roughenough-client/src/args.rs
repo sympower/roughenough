@@ -169,6 +169,13 @@ pub struct Args {
         default_value_t = false
     )]
     pub zulu: bool,
+
+    #[clap(
+        long = "dump-console",
+        help = "Dump raw request and response bytes to console for protocol debugging",
+        default_value_t = false
+    )]
+    pub dump_console: bool,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
