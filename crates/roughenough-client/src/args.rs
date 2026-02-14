@@ -89,6 +89,23 @@ pub struct Args {
     pub num_measurement_rounds: usize,
 
     #[clap(
+        long = "causality-violation-retries",
+        value_name = "N",
+        help = "Retry measurement sequence N times when causality violations are detected (RFC 8.2)",
+        requires = "server_list",
+        default_value_t = 0
+    )]
+    pub causality_violation_retries: u8,
+
+    #[clap(
+        long = "allow-untrusted-time",
+        help = "Return time even when causality violations are detected",
+        requires = "server_list",
+        default_value_t = false
+    )]
+    pub allow_untrusted_time: bool,
+
+    #[clap(
         short = 'q',
         long,
         conflicts_with = "verbose",

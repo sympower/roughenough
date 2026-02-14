@@ -14,7 +14,7 @@ use roughenough_client::sequence::MeasurementSequence;
 use roughenough_client::server_list::ServerList;
 use roughenough_client::{CausalityViolation, Client, ResponseValidator, server_list};
 use roughenough_common::encoding::try_decode_key;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[derive(thiserror::Error, Debug)]
 enum CliError {
@@ -108,25 +108,35 @@ fn query_multiple_servers(args: &Args, list_file: &String) -> u64 {
         std::process::exit(-1);
     });
 
-    let clients = clients_from_list(&server_list, args).unwrap_or_else(|e| {
-        error!("Processing '{list_file}': {e}");
-        std::process::exit(-1);
-    });
+    let max_attempts = 1 + args.causality_violation_retries;
+    let mut last_midpoint: u64 = 0;
 
-    let mut sequence = MeasurementSequence::new(clients).unwrap_or_else(|e| {
-        error!("Invalid measurement sequence: {e}");
-        std::process::exit(-1);
-    });
-    let measurements = sequence
-        .run(args.num_measurement_rounds)
-        .unwrap_or_else(|e| {
-            error!("Could not complete measurement sequence: {e}");
+    for attempt in 1..=max_attempts {
+        let clients = clients_from_list(&server_list, args).unwrap_or_else(|e| {
+            error!("Processing '{list_file}': {e}");
             std::process::exit(-1);
         });
 
-    let violations = ResponseValidator::validate_causality(&measurements);
+        let mut sequence = MeasurementSequence::new(clients).unwrap_or_else(|e| {
+            error!("Invalid measurement sequence: {e}");
+            std::process::exit(-1);
+        });
 
-    if !violations.is_empty() {
+        let measurements = sequence
+            .run(args.num_measurement_rounds)
+            .unwrap_or_else(|e| {
+                error!("Could not complete measurement sequence: {e}");
+                std::process::exit(-1);
+            });
+
+        last_midpoint = measurements.last().unwrap().midpoint();
+        let violations = ResponseValidator::validate_causality(&measurements);
+
+        if violations.is_empty() {
+            return last_midpoint;
+        }
+
+        // Violations detected - alert user and optionally send reports
         for violation in &violations {
             display_violation(args, violation);
         }
@@ -142,10 +152,28 @@ fn query_multiple_servers(args: &Args, list_file: &String) -> u64 {
                 }
             }
         }
+
+        // Retry if attempts remaining (RFC 8.2: "make another measurement")
+        if attempt < max_attempts {
+            warn!(
+                "Causality violation detected, retrying measurement ({}/{})",
+                attempt, args.causality_violation_retries
+            );
+        } else if args.causality_violation_retries > 0 {
+            error!(
+                "Causality violations persisted after {} retries",
+                args.causality_violation_retries
+            );
+        }
     }
 
-    // Return midpoint from the last measurement
-    measurements.last().unwrap().midpoint()
+    // All attempts had violations
+    if args.allow_untrusted_time {
+        warn!("Returning untrusted time due to --allow-untrusted-time flag");
+        return last_midpoint;
+    }
+
+    std::process::exit(1);
 }
 
 fn set_system_clock(midpoint: u64) {

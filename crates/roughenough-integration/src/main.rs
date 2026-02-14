@@ -1,4 +1,5 @@
-use std::io::{BufReader, Read};
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -136,6 +137,30 @@ fn main() {
         }
 
         println!("=== [{build_mode}] Causality violation detection test PASSED\n");
+    }
+
+    // Test 6: CLI --allow-untrusted-time flag
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI --allow-untrusted-time test...");
+
+        if !test_cli_allow_untrusted_time(build_mode) {
+            eprintln!("=== [{build_mode}] CLI --allow-untrusted-time test FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI --allow-untrusted-time test PASSED\n");
+    }
+
+    // Test 7: CLI causality violation exits with error by default
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI causality violation exit test...");
+
+        if !test_cli_causality_violation_exits_with_error(build_mode) {
+            eprintln!("=== [{build_mode}] CLI causality violation exit test FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI causality violation exit test PASSED\n");
     }
 
     println!("=== All end-to-end integration tests PASSED");
@@ -671,5 +696,160 @@ fn print_violations(violations: &[CausalityViolation]) {
             v.measurement_j.hostname(),
             v.measurement_j.midpoint()
         );
+    }
+}
+
+/// Create a temporary server list JSON file for CLI tests
+fn create_temp_server_list(ports: &[u16]) -> std::io::Result<String> {
+    let servers: Vec<String> = ports
+        .iter()
+        .map(|port| {
+            format!(
+                r#"{{
+                    "name": "test-server-{}",
+                    "version": "IETF-Roughtime",
+                    "publicKeyType": "ed25519",
+                    "publicKey": "{}",
+                    "addresses": [{{ "protocol": "udp", "address": "127.0.0.1:{}" }}]
+                }}"#,
+                port, TEST_PUBLIC_KEY, port
+            )
+        })
+        .collect();
+
+    let json = format!(r#"{{ "servers": [{}] }}"#, servers.join(","));
+
+    let path = format!("/tmp/roughenough-test-servers-{}.json", std::process::id());
+    let mut file = File::create(&path)?;
+    file.write_all(json.as_bytes())?;
+
+    Ok(path)
+}
+
+/// Test that --allow-untrusted-time returns success even with causality violations
+fn test_cli_allow_untrusted_time(build_mode: &str) -> bool {
+    let server_path = format!("target/{build_mode}/roughenough_server");
+    let client_path = format!("target/{build_mode}/roughenough_client");
+
+    // Start servers with time offset to cause violations
+    let configs = [(2011, "14", 0i16), (2012, "14", -60i16), (2013, "14", 0i16)];
+    let mut servers: Vec<ServerGuard> = Vec::new();
+
+    for (port, protocol, offset) in configs {
+        match start_server_with_offset(&server_path, port, protocol, offset) {
+            Some(s) => servers.push(s),
+            None => return false,
+        }
+    }
+
+    thread::sleep(Duration::from_millis(300));
+
+    for server in servers.iter_mut() {
+        if !server.check_running() {
+            return false;
+        }
+    }
+
+    // Create server list file
+    let ports: Vec<u16> = configs.iter().map(|(p, _, _)| *p).collect();
+    let server_list_path = match create_temp_server_list(&ports) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("    Failed to create server list: {e}");
+            return false;
+        }
+    };
+
+    // Run client with --allow-untrusted-time - should succeed despite violations
+    println!("    Running client with --allow-untrusted-time (expecting success)...");
+    let result = Command::new(&client_path)
+        .args(["-l", &server_list_path, "-u", "3", "--allow-untrusted-time"])
+        .output();
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&server_list_path);
+
+    match result {
+        Ok(output) => {
+            if output.status.success() {
+                println!("    Client correctly returned success with --allow-untrusted-time");
+                true
+            } else {
+                eprintln!("    ERROR: Client should have succeeded with --allow-untrusted-time");
+                eprintln!(
+                    "    Exit code: {}, stderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("    Failed to run client: {e}");
+            false
+        }
+    }
+}
+
+/// Test that causality violations cause exit with error by default
+fn test_cli_causality_violation_exits_with_error(build_mode: &str) -> bool {
+    let server_path = format!("target/{build_mode}/roughenough_server");
+    let client_path = format!("target/{build_mode}/roughenough_client");
+
+    // Start servers with time offset to cause violations
+    let configs = [(2021, "14", 0i16), (2022, "14", -60i16), (2023, "14", 0i16)];
+    let mut servers: Vec<ServerGuard> = Vec::new();
+
+    for (port, protocol, offset) in configs {
+        match start_server_with_offset(&server_path, port, protocol, offset) {
+            Some(s) => servers.push(s),
+            None => return false,
+        }
+    }
+
+    thread::sleep(Duration::from_millis(300));
+
+    for server in servers.iter_mut() {
+        if !server.check_running() {
+            return false;
+        }
+    }
+
+    // Create server list file
+    let ports: Vec<u16> = configs.iter().map(|(p, _, _)| *p).collect();
+    let server_list_path = match create_temp_server_list(&ports) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("    Failed to create server list: {e}");
+            return false;
+        }
+    };
+
+    // Run client without --allow-untrusted-time - should fail due to violations
+    println!("    Running client without --allow-untrusted-time (expecting failure)...");
+    let result = Command::new(&client_path)
+        .args(["-l", &server_list_path, "-u", "3"])
+        .output();
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&server_list_path);
+
+    match result {
+        Ok(output) => {
+            if !output.status.success() {
+                println!(
+                    "    Client correctly exited with error (code: {})",
+                    output.status
+                );
+                true
+            } else {
+                eprintln!("    ERROR: Client should have failed due to causality violations");
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("    Failed to run client: {e}");
+            false
+        }
     }
 }
