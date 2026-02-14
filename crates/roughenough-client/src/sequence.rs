@@ -29,9 +29,25 @@ pub struct MeasurementSequence {
 }
 
 impl MeasurementSequence {
+    /// RFC section 10: "query at least three servers"
+    pub const MIN_SERVERS: usize = 3;
+
+    /// RFC section 8.2: "the whole sequence of servers is repeated twice"
+    pub const DEFAULT_ROUNDS: usize = 2;
+
     /// Create a new measurement sequence with the given clients.
-    pub fn new(clients: Vec<Client>) -> Self {
-        Self { clients }
+    ///
+    /// Returns an error if fewer than [`MIN_SERVERS`](Self::MIN_SERVERS) clients are provided,
+    /// as required by RFC section 10.
+    pub fn new(clients: Vec<Client>) -> Result<Self, ClientError> {
+        if clients.len() < Self::MIN_SERVERS {
+            return Err(ClientError::InvalidConfiguration(format!(
+                "measurement sequence requires at least {} servers (RFC section 10), got {}",
+                Self::MIN_SERVERS,
+                clients.len()
+            )));
+        }
+        Ok(Self { clients })
     }
 
     /// Run chained measurements across all servers for the specified number of rounds, returning
@@ -131,5 +147,69 @@ impl MeasurementSequence {
         };
 
         Ok((nonce, rand))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use super::*;
+
+    fn test_client(id: u8) -> Client {
+        let addr: SocketAddr = format!("127.0.0.1:{}", 2000 + id as u16).parse().unwrap();
+        Client::builder(addr).build()
+    }
+
+    #[test]
+    fn min_servers_constant_is_three() {
+        assert_eq!(MeasurementSequence::MIN_SERVERS, 3);
+    }
+
+    #[test]
+    fn default_rounds_constant_is_two() {
+        assert_eq!(MeasurementSequence::DEFAULT_ROUNDS, 2);
+    }
+
+    #[test]
+    fn new_rejects_zero_clients() {
+        let result = MeasurementSequence::new(vec![]);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("at least 3 servers"));
+        assert!(err.to_string().contains("got 0"));
+    }
+
+    #[test]
+    fn new_rejects_one_client() {
+        let result = MeasurementSequence::new(vec![test_client(1)]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("got 1"));
+    }
+
+    #[test]
+    fn new_rejects_two_clients() {
+        let result = MeasurementSequence::new(vec![test_client(1), test_client(2)]);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("got 2"));
+    }
+
+    #[test]
+    fn new_accepts_three_clients() {
+        let clients = vec![test_client(1), test_client(2), test_client(3)];
+        let result = MeasurementSequence::new(clients);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_accepts_more_than_three_clients() {
+        let clients = vec![
+            test_client(1),
+            test_client(2),
+            test_client(3),
+            test_client(4),
+        ];
+        let result = MeasurementSequence::new(clients);
+        assert!(result.is_ok());
     }
 }

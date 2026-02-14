@@ -4,9 +4,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use roughenough_client::Client;
 use roughenough_client::sequence::MeasurementSequence;
 use roughenough_client::validation::ResponseValidator;
+use roughenough_client::{CausalityViolation, Client};
 use roughenough_common::encoding::try_decode_key;
 use roughenough_protocol::protocol_ver::ProtocolVersion;
 
@@ -475,39 +475,10 @@ fn run_measurement_sequence(ports: &[u16], protocol: ProtocolVersion, rounds: us
         rounds
     );
 
-    let mut sequence = MeasurementSequence::new(clients);
-    match sequence.run(rounds) {
-        Ok(measurements) => {
-            println!(
-                "    Collected {} measurements across {} servers",
-                measurements.len(),
-                ports.len()
-            );
-
-            // Validate causality
-            let violations = ResponseValidator::validate_causality(&measurements);
-            if violations.is_empty() {
-                println!("    Causality validation passed (no violations)");
-                true
-            } else {
-                eprintln!("    Causality violations detected: {}", violations.len());
-                for v in &violations {
-                    eprintln!(
-                        "      {} (midp={}) vs {} (midp={})",
-                        v.measurement_i.hostname(),
-                        v.measurement_i.midpoint(),
-                        v.measurement_j.hostname(),
-                        v.measurement_j.midpoint()
-                    );
-                }
-                false
-            }
-        }
-        Err(e) => {
-            eprintln!("    Measurement sequence failed: {e}");
-            false
-        }
-    }
+    let num_servers = ports.len();
+    let mut sequence =
+        MeasurementSequence::new(clients).expect("failed to create measurement sequence");
+    run_and_validate(&mut sequence, rounds, num_servers, ExpectedViolations::None)
 }
 
 /// Test causality violation detection with a server returning intentionally wrong time
@@ -589,45 +560,10 @@ fn run_causality_violation_sequence(configs: &[(u16, &str, i16)], rounds: usize)
         rounds
     );
 
-    let mut sequence = MeasurementSequence::new(clients);
-    match sequence.run(rounds) {
-        Ok(measurements) => {
-            println!(
-                "    Collected {} measurements across {} servers",
-                measurements.len(),
-                configs.len()
-            );
-
-            // Validate causality - we EXPECT violations due to the time offset
-            let violations = ResponseValidator::validate_causality(&measurements);
-            if violations.is_empty() {
-                eprintln!("    ERROR: Expected causality violations but found none!");
-                eprintln!(
-                    "    This suggests the time offset server didn't cause detectable violations."
-                );
-                false
-            } else {
-                println!(
-                    "    Causality violations correctly detected: {} violations",
-                    violations.len()
-                );
-                for v in &violations {
-                    println!(
-                        "      {} (midp={}) vs {} (midp={})",
-                        v.measurement_i.hostname(),
-                        v.measurement_i.midpoint(),
-                        v.measurement_j.hostname(),
-                        v.measurement_j.midpoint()
-                    );
-                }
-                true
-            }
-        }
-        Err(e) => {
-            eprintln!("    Measurement sequence failed: {e}");
-            false
-        }
-    }
+    let num_servers = configs.len();
+    let mut sequence =
+        MeasurementSequence::new(clients).expect("failed to create measurement sequence");
+    run_and_validate(&mut sequence, rounds, num_servers, ExpectedViolations::Some)
 }
 
 /// Run a measurement sequence across servers with mixed protocol versions
@@ -664,37 +600,76 @@ fn run_mixed_protocol_sequence(configs: &[(u16, &str)], rounds: usize) -> bool {
         rounds
     );
 
-    let mut sequence = MeasurementSequence::new(clients);
-    match sequence.run(rounds) {
-        Ok(measurements) => {
-            println!(
-                "    Collected {} measurements across {} servers",
-                measurements.len(),
-                configs.len()
-            );
+    let num_servers = configs.len();
+    let mut sequence =
+        MeasurementSequence::new(clients).expect("failed to create measurement sequence");
+    run_and_validate(&mut sequence, rounds, num_servers, ExpectedViolations::None)
+}
 
-            // Validate causality
-            let violations = ResponseValidator::validate_causality(&measurements);
+/// Whether a test expects causality violations or not
+enum ExpectedViolations {
+    None,
+    Some,
+}
+
+/// Run a measurement sequence and validate causality, returning success/failure.
+fn run_and_validate(
+    sequence: &mut MeasurementSequence,
+    rounds: usize,
+    num_servers: usize,
+    expected: ExpectedViolations,
+) -> bool {
+    let measurements = match sequence.run(rounds) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("    Measurement sequence failed: {e}");
+            return false;
+        }
+    };
+
+    println!(
+        "    Collected {} measurements across {} servers",
+        measurements.len(),
+        num_servers
+    );
+
+    let violations = ResponseValidator::validate_causality(&measurements);
+
+    match expected {
+        ExpectedViolations::None => {
             if violations.is_empty() {
                 println!("    Causality validation passed (no violations)");
                 true
             } else {
                 eprintln!("    Causality violations detected: {}", violations.len());
-                for v in &violations {
-                    eprintln!(
-                        "      {} (midp={}) vs {} (midp={})",
-                        v.measurement_i.hostname(),
-                        v.measurement_i.midpoint(),
-                        v.measurement_j.hostname(),
-                        v.measurement_j.midpoint()
-                    );
-                }
+                print_violations(&violations);
                 false
             }
         }
-        Err(e) => {
-            eprintln!("    Measurement sequence failed: {e}");
-            false
+        ExpectedViolations::Some => {
+            if violations.is_empty() {
+                eprintln!("    ERROR: Expected causality violations but found none!");
+                false
+            } else {
+                println!(
+                    "    Causality violations correctly detected: {} violations",
+                    violations.len()
+                );
+                print_violations(&violations);
+                true
+            }
         }
+    }
+}
+
+fn print_violations(violations: &[CausalityViolation]) {
+    for v in violations {
+        println!(
+            "      {} (midp={}) vs {} (midp={})",
+            v.measurement_i.hostname(),
+            v.measurement_i.midpoint(),
+            v.measurement_j.hostname(),
+            v.measurement_j.midpoint()
+        );
     }
 }
