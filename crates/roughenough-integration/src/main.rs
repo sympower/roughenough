@@ -163,6 +163,42 @@ fn main() {
         println!("=== [{build_mode}] CLI causality violation exit test PASSED\n");
     }
 
+    // Test 8: CLI --dump-console flag for protocol debugging (draft-14)
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI --dump-console test (draft-14)...");
+
+        if !test_cli_dump_flag(build_mode, "14") {
+            eprintln!("=== [{build_mode}] CLI --dump-console test (draft-14) FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI --dump-console test (draft-14) PASSED\n");
+    }
+
+    // Test 9: CLI --dump-console flag with draft-08 protocol
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI --dump-console test (draft-08)...");
+
+        if !test_cli_dump_flag(build_mode, "8") {
+            eprintln!("=== [{build_mode}] CLI --dump-console test (draft-08) FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI --dump-console test (draft-08) PASSED\n");
+    }
+
+    // Test 10: CLI --dump-console shows bytes even on validation failure
+    for build_mode in ["debug", "release"] {
+        println!("=== [{build_mode}] CLI --dump-console validation failure test...");
+
+        if !test_cli_dump_validation_failure(build_mode) {
+            eprintln!("=== [{build_mode}] CLI --dump-console validation failure test FAILED");
+            std::process::exit(1);
+        }
+
+        println!("=== [{build_mode}] CLI --dump-console validation failure test PASSED\n");
+    }
+
     println!("=== All end-to-end integration tests PASSED");
 }
 
@@ -844,6 +880,173 @@ fn test_cli_causality_violation_exits_with_error(build_mode: &str) -> bool {
                 true
             } else {
                 eprintln!("    ERROR: Client should have failed due to causality violations");
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("    Failed to run client: {e}");
+            false
+        }
+    }
+}
+
+/// Test that --dump-console flag outputs protocol debug information for both request and response
+fn test_cli_dump_flag(build_mode: &str, protocol: &str) -> bool {
+    let server_path = format!("target/{build_mode}/roughenough_server");
+    let client_path = format!("target/{build_mode}/roughenough_client");
+
+    // Start a server
+    let mut server = match start_server(&server_path, 2031, protocol) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    thread::sleep(Duration::from_millis(200));
+
+    if !server.check_running() {
+        return false;
+    }
+
+    // Run client with --dump-console flag
+    println!(
+        "    Running client with --dump-console flag (protocol {})...",
+        protocol
+    );
+    let result = Command::new(&client_path)
+        .args([
+            "127.0.0.1",
+            "2031",
+            "-k",
+            TEST_PUBLIC_KEY,
+            "-P",
+            protocol,
+            "--dump-console",
+        ])
+        .output();
+
+    match result {
+        Ok(output) => {
+            if !output.status.success() {
+                eprintln!("    ERROR: Client with --dump-console should have succeeded");
+                eprintln!(
+                    "    Exit code: {}, stderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return false;
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            // Verify expected request dump output markers
+            let has_request_header = stdout.contains("=== Request dump ===");
+            let has_request_footer = stdout.contains("====================");
+
+            // Verify expected response dump output markers
+            let has_response_header = stdout.contains("=== Response dump ===");
+            let has_magic = stdout.contains("ROUGHTIM");
+            let has_tags = stdout.contains("Tags (");
+            let has_response_footer = stdout.contains("=====================");
+
+            if has_request_header
+                && has_request_footer
+                && has_response_header
+                && has_magic
+                && has_tags
+                && has_response_footer
+            {
+                println!(
+                    "    Client --dump-console output contains expected request and response markers"
+                );
+                true
+            } else {
+                eprintln!("    ERROR: --dump-console output missing expected content");
+                eprintln!("    has_request_header: {}", has_request_header);
+                eprintln!("    has_request_footer: {}", has_request_footer);
+                eprintln!("    has_response_header: {}", has_response_header);
+                eprintln!("    has_magic: {}", has_magic);
+                eprintln!("    has_tags: {}", has_tags);
+                eprintln!("    has_response_footer: {}", has_response_footer);
+                eprintln!("    Got: {}", stdout);
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("    Failed to run client: {e}");
+            false
+        }
+    }
+}
+
+/// Test that --dump-console shows raw bytes even when validation fails
+fn test_cli_dump_validation_failure(build_mode: &str) -> bool {
+    let server_path = format!("target/{build_mode}/roughenough_server");
+    let client_path = format!("target/{build_mode}/roughenough_client");
+
+    // Start a server
+    let mut server = match start_server(&server_path, 2032, "14") {
+        Some(s) => s,
+        None => return false,
+    };
+
+    thread::sleep(Duration::from_millis(200));
+
+    if !server.check_running() {
+        return false;
+    }
+
+    // Run client with --dump-console flag and WRONG public key
+    println!(
+        "    Running client with --dump-console and wrong key (expecting failure with dump)..."
+    );
+    let result = Command::new(&client_path)
+        .args([
+            "127.0.0.1",
+            "2032",
+            "-k",
+            WRONG_PUBLIC_KEY,
+            "-P",
+            "14",
+            "--dump-console",
+        ])
+        .output();
+
+    match result {
+        Ok(output) => {
+            // Should fail validation but still show dump
+            if output.status.success() {
+                eprintln!("    ERROR: Client should have failed with wrong public key");
+                return false;
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            // Verify dump output is present despite failure
+            let has_request_header = stdout.contains("=== Request dump ===");
+            let has_response_header = stdout.contains("=== Response dump ===");
+            let has_magic = stdout.contains("ROUGHTIM");
+            let has_tags = stdout.contains("Tags (");
+
+            // Verify validation failure message (goes to stdout via tracing)
+            let has_validation_failed =
+                stdout.contains("validation of the server's response failed");
+
+            if has_request_header
+                && has_response_header
+                && has_magic
+                && has_tags
+                && has_validation_failed
+            {
+                println!("    Client --dump-console correctly shows bytes and validation failure");
+                true
+            } else {
+                eprintln!("    ERROR: --dump-console on failure missing expected content");
+                eprintln!("    has_request_header: {}", has_request_header);
+                eprintln!("    has_response_header: {}", has_response_header);
+                eprintln!("    has_magic: {}", has_magic);
+                eprintln!("    has_tags: {}", has_tags);
+                eprintln!("    has_validation_failed: {}", has_validation_failed);
+                eprintln!("    stdout: {}", stdout);
                 false
             }
         }

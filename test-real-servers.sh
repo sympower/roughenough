@@ -97,8 +97,8 @@ test_server() {
     fi
 }
 
-# Retry failed server with verbose output
-verbose_retry() {
+# Retry failed server with protocol dump
+dump_retry() {
     local name="$1"
     local host="$2"
     local port="$3"
@@ -108,12 +108,12 @@ verbose_retry() {
     echo ""
     echo "--- $name ($host:$port) ---"
 
-    local cmd="$CLIENT $host $port -P $protocol -v"
+    local cmd="$CLIENT $host $port -P $protocol --dump"
     if [ -n "$pubkey" ]; then
         cmd="$cmd -k $pubkey"
     fi
 
-    $cmd 2>&1 | head -50
+    $cmd 2>&1
 }
 
 echo ""
@@ -148,15 +148,15 @@ printf "  ${RED}Failed:${NC}  %d\n" $FAILED
 printf "  ${YELLOW}Skipped:${NC} %d (timeouts)\n" $SKIPPED
 echo ""
 
-# Show verbose output for failures
+# Show protocol dump for failures
 if [ ${#FAILED_SERVERS[@]} -gt 0 ]; then
     echo "=============================================================================="
-    echo "                         Failure Details (Raw Protocol)"
+    echo "                         Failure details (protocol dump)"
     echo "=============================================================================="
 
     for server in "${FAILED_SERVERS[@]}"; do
         IFS='|' read -r name host port protocol pubkey <<< "$server"
-        verbose_retry "$name" "$host" "$port" "$protocol" "$pubkey"
+        dump_retry "$name" "$host" "$port" "$protocol" "$pubkey"
     done
 
     echo ""
