@@ -33,4 +33,9 @@ Response = RtMessage|7|{
   INDX(4) = 00000000
 }
 
+---
 
+draft08-request.ec05ed44   Single request, RFC draft-08
+draft08-response.ec05ed44  Response to corresponding request, RFC draft-08
+
+Feb 14 2026 captured from roughtime.cloudflare.com:2002

@@ -728,6 +728,51 @@ mod tests {
     }
 
     #[test]
+    fn request_draft08_from_wire_known_bytes() {
+        // Request captured from Cloudflare roughtime.cloudflare.com:2002 (draft-08)
+        // Request = RtMessage|3|{
+        //   VER(4) = 08000080
+        //   NONC(32) = ec05ed444c1c840f3875e6ac4ee2a74e08b228893 11ea4f2253cdecd320d6d7d
+        //   ZZZZ(952) = 0000000...
+        // }
+        let raw = include_bytes!("../testdata/draft08-request.ec05ed44");
+
+        // skip 12 framing bytes as we're constructing a concrete RequestDraft08
+        let mut data = raw[12..].to_vec();
+        let mut cursor = ParseCursor::new(&mut data);
+
+        let request = RequestDraft08::from_wire(&mut cursor).unwrap();
+
+        // Draft-08 version
+        let expected_versions = RequestedVersions::new(&[ProtocolVersion::RfcDraft08]);
+        assert_eq!(*request.ver(), expected_versions);
+        assert_eq!(
+            request.nonce.as_ref()[..8],
+            [0xec, 0x05, 0xed, 0x44, 0x4c, 0x1c, 0x84, 0x0f]
+        );
+        assert_eq!(request.padding, [0u8; 952]);
+    }
+
+    #[test]
+    fn request_draft08_from_frame_selects_correct_impl() {
+        let raw = include_bytes!("../testdata/draft08-request.ec05ed44");
+        let mut data = raw.to_vec();
+        let mut cursor = ParseCursor::new(&mut data);
+
+        match Request::from_frame(&mut cursor) {
+            Ok(Draft08(req)) => {
+                assert_eq!(
+                    req.nonc().as_ref()[..8],
+                    [0xec, 0x05, 0xed, 0x44, 0x4c, 0x1c, 0x84, 0x0f]
+                );
+            }
+            Ok(Draft14(_)) => panic!("Expected Draft08 variant"),
+            Ok(Draft14Srv(_)) => panic!("Expected Draft08 variant"),
+            Err(e) => panic!("No error should have been returned: {e:?}"),
+        }
+    }
+
+    #[test]
     fn request_draft08_wire_size() {
         let nonce = Nonce::from([0x42; 32]);
         let req = RequestDraft08::new(&nonce);

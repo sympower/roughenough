@@ -685,4 +685,88 @@ mod tests {
         assert_eq!(response.header.offsets[1], 68);
         assert_eq!(response.header.offsets[2], 260);
     }
+
+    #[test]
+    fn response_draft08_from_wire_known_bytes() {
+        // Response captured from Cloudflare roughtime.cloudflare.com:2002 (draft-08)
+        // Response = RtMessage|6|{
+        //   SIG(64) = 78fa5655b3fecd8e2f453d2af1a22a4cff271e1a3d6deca04358...
+        //   VER(4) = 08000080
+        //   PATH(0) = (empty)
+        //   SREP(68) = RtMessage|3|{
+        //     RADI(4) = 01000000
+        //     MIDP(8) = d1969069 00000000
+        //     ROOT(32) = d67b48c1304abae9ceb6eace990ac7830169...
+        //   }
+        //   CERT(152) = RtMessage|2|{
+        //     SIG(64) = b5317d8ded8c7d4388f6656e100f7cdb5dab0278...
+        //     DELE(72) = RtMessage|3|{
+        //       PUBK(32) = 8d6d21dacbbf65f1d4b5b36b362b99092bb525a2...
+        //       MINT(8) = df069069 00000000
+        //       MAXT(8) = 5f589169 00000000
+        //     }
+        //   }
+        //   INDX(4) = 00000000
+        // }
+        let mut raw = include_bytes!("../testdata/draft08-response.ec05ed44").to_vec();
+
+        let mut cursor = ParseCursor::new(&mut raw);
+        let response = ResponseDraft08::from_frame(&mut cursor).unwrap();
+
+        // Verify header structure
+        assert_eq!(response.header().offsets(), [64, 68, 68, 136, 288]);
+        assert_eq!(
+            response.header().tags(),
+            [
+                Tag::SIG,
+                Tag::VER,
+                Tag::PATH,
+                Tag::SREP,
+                Tag::CERT,
+                Tag::INDX
+            ]
+        );
+
+        // Verify SIG (first 8 bytes)
+        assert_eq!(
+            response.sig().as_ref()[..8],
+            [0x78, 0xfa, 0x56, 0x55, 0xb3, 0xfe, 0xcd, 0x8e]
+        );
+
+        // Verify VER is draft-08
+        assert_eq!(response.ver(), RfcDraft08);
+
+        // Verify PATH is empty (index 0, leaf in merkle tree)
+        assert_eq!(response.path().as_ref().len(), 0);
+
+        // Verify INDX
+        assert_eq!(response.indx(), 0);
+
+        // Verify SREP fields
+        let srep = response.srep();
+        assert_eq!(srep.radi(), 1);
+        assert_eq!(srep.midp(), 1771083473); // 0x6990_96d1 little-endian
+        assert_eq!(
+            srep.root().as_ref()[..8],
+            [0xd6, 0x7b, 0x48, 0xc1, 0x30, 0x4a, 0xba, 0xe9]
+        );
+
+        // Verify CERT
+        let cert = response.cert();
+        assert_eq!(cert.header().offsets(), [64]);
+        assert_eq!(cert.header().tags(), [Tag::SIG, Tag::DELE]);
+        assert_eq!(
+            cert.sig().as_ref()[..8],
+            [0xb5, 0x31, 0x7d, 0x8d, 0xed, 0x8c, 0x7d, 0x43]
+        );
+
+        // Verify DELE
+        let dele = cert.dele();
+        assert_eq!(dele.header().offsets(), [32, 40]);
+        assert_eq!(dele.header().tags(), [Tag::PUBK, Tag::MINT, Tag::MAXT]);
+        assert_eq!(
+            dele.pubk().as_ref()[..8],
+            [0x8d, 0x6d, 0x21, 0xda, 0xcb, 0xbf, 0x65, 0xf1]
+        );
+    }
 }
