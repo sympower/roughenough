@@ -105,6 +105,22 @@ pub struct Args {
     pub send_report: bool,
 
     #[clap(
+        long = "report-timeout",
+        value_name = "SECS",
+        help = "HTTP request timeout for malfeasance reports",
+        default_value_t = 5
+    )]
+    pub report_timeout: u64,
+
+    #[clap(
+        long = "report-retries",
+        value_name = "N",
+        help = "Number of retry attempts for failed report submissions (exponential backoff)",
+        default_value_t = 0
+    )]
+    pub report_retries: u32,
+
+    #[clap(
         short = 's',
         long = "set-clock",
         help = "Set the system's clock to the received time",
