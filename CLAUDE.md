@@ -177,6 +177,9 @@ cargo run --bin roughenough_client -- hostname.com 2002 --report
 # Protocol debugging - dump raw bytes to console
 cargo run --bin roughenough_client -- hostname.com 2002 --dump-console
 
+# Protocol debugging - dump raw bytes to files
+cargo run --bin roughenough_client -- hostname.com 2002 --dump-dir /tmp/dumps
+
 # Or directly:
 target/debug/roughenough_client hostname.com 2002
 ```

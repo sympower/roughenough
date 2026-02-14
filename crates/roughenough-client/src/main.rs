@@ -1,6 +1,9 @@
 //! The main client CLI
 
+use std::fs::File;
+use std::io::Write;
 use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::time::Duration;
 
 use clap::Parser;
@@ -86,12 +89,29 @@ fn query_single_server(args: &Args, hostname: &String) -> u64 {
 
     let client = builder.build();
 
+    let dump_dir = args.dump_dir.as_ref().map(|dir| {
+        let dir_path = Path::new(dir);
+        std::fs::create_dir_all(dir_path).unwrap_or_else(|e| {
+            error!("Failed to create dump directory '{dir}': {e}");
+            std::process::exit(-1);
+        });
+        dir_path
+    });
+
     let mut midpoint: u64 = 0;
     for _ in 0..args.num_requests {
         let (result, request_bytes, response_bytes) = client.query_raw().unwrap_or_else(|e| {
             error!("Failed to reach '{hostname}:{port}': {e}");
             std::process::exit(-1);
         });
+
+        if let Some(dir_path) = dump_dir {
+            let timestamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S-%3f");
+            let request_path = dir_path.join(format!("{}-request.bin", timestamp));
+            let response_path = dir_path.join(format!("{}-response.bin", timestamp));
+            write_bytes_to_file(&request_path, &request_bytes);
+            write_bytes_to_file(&response_path, &response_bytes);
+        }
 
         if args.dump_console {
             dump_raw_frame(&request_bytes, "Request dump");
@@ -328,6 +348,18 @@ fn display_violation(args: &Args, violation: &CausalityViolation) {
         );
     }
     error!("===========================");
+}
+
+fn write_bytes_to_file(path: &Path, bytes: &[u8]) {
+    let mut file = File::create(path).unwrap_or_else(|e| {
+        error!("Failed to create file '{}': {e}", path.display());
+        std::process::exit(-1);
+    });
+    file.write_all(bytes).unwrap_or_else(|e| {
+        error!("Failed to write to file '{}': {e}", path.display());
+        std::process::exit(-1);
+    });
+    debug!("Wrote {} bytes to '{}'", bytes.len(), path.display());
 }
 
 fn display_measurement(args: &Args, measurement: &Measurement) {

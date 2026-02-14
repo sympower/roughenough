@@ -176,6 +176,13 @@ pub struct Args {
         default_value_t = false
     )]
     pub dump_console: bool,
+
+    #[clap(
+        long = "dump-dir",
+        value_name = "DIR",
+        help = "Write raw request/response bytes to directory (e.g. 20260214-170107-775-request.bin)"
+    )]
+    pub dump_dir: Option<String>,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
